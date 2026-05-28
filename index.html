@@ -465,23 +465,35 @@ PROVEEDOR CHIQUILLAS / 2025 JYH MARKETING SAS (NIT 900238396):
 
 PROVEEDOR LA ALSACIA / RAMIREZ RAMIREZ LEONARDO DE JESUS (NIT 8353513):
   - Formato POS con columnas: CODIGO, DESCR, UND, CANT, VALOR, TOTAL
-  - El VALOR que aparece después de UND y CANT ya incluye TODOS los impuestos — es el valor final
-  - valor_unitario_costo = columna VALOR directamente, sin sumar nada
+  - El VALOR ya incluye TODOS los impuestos — es el precio del PACK completo
   - valor_total_linea = columna TOTAL directamente
-  - REGLA DE CONVERSIÓN — la "x" en el nombre es codificación del proveedor:
-    * Para BEBIDAS y PACKS indivisibles (cervezas, gaseosas, jugos en pack): el último "xN" indica conversión
-      - "CERVEZA AGUILA NORMX6" → conv=6
-      - "REFAJO COLA & POLA x24" → conv=24
-    * Para ALIMENTOS, ASEO y PRODUCTOS DE CONSUMO MASIVO: la "x" indica contenido del empaque del proveedor, NO conversión
-      - "COLGATE TRIP ACx75x144" → conv=1 (x144 es el contenido de caja del proveedor)
-      - "ACE OLEOCALIx900x12" → conv=1 (x12 es contenido de caja)
-      - "FR SALCH RANCHE x5U" → conv=1 (x5U es el contenido del paquete)
+  - REGLA DE CONVERSIÓN — la "x" en el nombre indica unidades por pack:
+    * BEBIDAS y PACKS (cervezas, maltas, té, jugos, aguas, cocteles): el último "xN" o "X N" → conv=N
+      - "CERVEZA AGUILA NORMX6" → conv=6, valor_unit=VALOR÷6
+      - "PONY MALTAx330x24" → conv=24, valor_unit=VALOR÷24
+      - "TE HATSUx400x6" → conv=6, valor_unit=VALOR÷6
+      - "BEBIDA LOS CUATES X269X24" → conv=1 (EXCEPCIÓN: X269 son ml, X24 es referencia)
+      - "GANSITO x6 UNI" → conv=6, valor_unit=VALOR÷6
+      - "CHOCO BROWNIE AREQUIx6" → conv=6, valor_unit=VALOR÷6
+      - "GALL ALFAJORx12X420GR" → conv=12, valor_unit=VALOR÷12
+      - "GALL SALTIN TACO DIAx6" → conv=6, valor_unit=VALOR÷6
+    * ALIMENTOS, ASEO y CONSUMO MASIVO: la "x" indica contenido del empaque, NO conversión → conv=1
+      - "FR SALCH RANCHE x5U" → conv=1, valor_unit=VALOR
+      - "ACE OLEOCALIx900x12" → conv=1 (x12 es caja del proveedor)
       - "MILO ACTIV DOYPACK 220X20" → conv=1
+      - "COLGATE TRIP ACx75x144" → conv=1
     * Si hay duda → conv=1
-  - Ejemplos:
-    * "CEPILLO COLG PREMIER" VALOR=$2.072,60 → valor_unit=2073, conv=1
-    * "CERVEZA AGUILA NORMX6" VALOR=$15.275 → valor_unit=15275, conv=6
-    * "FR SALCH RANCHE x5U" VALOR=$6.370 → valor_unit=6370, conv=1
+  - valor_unitario_costo = VALOR ÷ conv (precio por unidad individual)
+  - Ejemplos verificados con factura EA530314:
+    * "FR SALCH RANCHE x5U" CANT=12, VALOR=$6.370, TOTAL=$76.440 → conv=1, valor_unit=6370
+    * "CERVEZA AGUILA NORMX6" CANT=4, VALOR=$15.731, TOTAL=$62.924 → conv=6, valor_unit=15731÷6=2622
+    * "PONY MALTAx330x24" CANT=1, VALOR=$48.650, TOTAL=$48.650 → conv=24, valor_unit=48650÷24=2027
+    * "TE HATSUx400x6" CANT=2, VALOR=$24.000, TOTAL=$48.000 → conv=6, valor_unit=24000÷6=4000
+    * "BEBIDA LOS CUATES X269X24" CANT=6, VALOR=$4.250, TOTAL=$25.500 → conv=1, valor_unit=4250
+    * "GANSITO x6 UNI" CANT=3, VALOR=$9.165, TOTAL=$27.495 → conv=6, valor_unit=9165÷6=1528
+    * "CHOCO BROWNIE AREQUIx6" CANT=2, VALOR=$15.420, TOTAL=$30.840 → conv=6, valor_unit=15420÷6=2570
+    * "GALL ALFAJORx12X420GR" CANT=1, VALOR=$21.350, TOTAL=$21.350 → conv=12, valor_unit=21350÷12=1779
+    * "GALL SALTIN TACO DIAx6" CANT=1, VALOR=$11.630, TOTAL=$11.630 → conv=6, valor_unit=11630÷6=1938
 
 PROVEEDOR VECTOR FOODS S.A.S / MONTEROJO (NIT 900842621):
   - Columnas: Ítem, Código, Descripción, Cantidad, Vr. Unitario, Valor desc., Vr. Bruto, Bodega
@@ -1102,12 +1114,7 @@ function App() {
           continue;
         }
         addLog(`→ ✓ ${resultado.productos?.length} producto(s) — ${resultado.proveedor}${resultado._intentos > 1 ? ` (intento ${resultado._intentos})` : ""}`, "lok");
-        // Log detallado de conversiones para debugging
-        if (resultado.proveedor?.includes("OROZCO") || resultado.proveedor?.includes("QAP")) {
-          resultado.productos?.forEach(p => {
-            addLog(`   · ${p.descripcion} | cant=${p.cantidad_factura} | conv=${p.cantidad_por_conversion} | und_med=${p.unidad_medida} | vr=${p.valor_unitario_costo}`, "linf");
-          });
-        }
+
         
         // Enriquecer con maestro de productos
         if (resultado.productos?.length > 0) {
