@@ -1128,7 +1128,7 @@ function App() {
         const resultado = await analizarConIA(texto, file.name, addLog, file, apiKey);
         // Ignorar proveedores excluidos
         const NITS_IGNORAR = ["902032136"]; // EDS Autogas - gasolina, no va a TouchPay
-        const DESCRIPCIONES_IGNORAR = ["EXHIBIDOR", "DISPLAY", "MATERIAL POP", "MATERIAL PUBLICITARIO"];
+        const DESCRIPCIONES_IGNORAR = ["EXHIBIDOR", "DISPLAY", "MATERIAL POP", "MATERIAL PUBLICITARIO", "E-BOLSA", "BOLSA EMPAQUE", "BOLSA DE EMPAQUE"];
         if (DESCRIPCIONES_IGNORAR.some(d => resultado.productos?.some(p => p.nombre_normalizado?.toUpperCase().includes(d)))) {
           resultado.productos = resultado.productos.filter(p => !DESCRIPCIONES_IGNORAR.some(d => p.nombre_normalizado?.toUpperCase().includes(d)));
         }
@@ -1277,9 +1277,10 @@ Ahora estás en "Agregar Manualmente". Por cada producto:
 1. En el campo "Producto" (dropdown con ícono de carrito), escribe el EAN y espera que filtre, luego selecciona la primera opción
 2. En "Valor en $": ingresa el precio unitario
 3. En "Unidad en la factura": ingresa la cantidad
-4. En "Cant. por conversión": ingresa 1 (a menos que se indique otro valor)
-5. Si NO es el último producto: haz clic en "AGREGAR OTRO"
-6. Si ES el último producto: haz clic en "AGREGAR Y FINALIZAR"
+4. En "Unidad de conversión" (dropdown): selecciona "Unit"
+5. En "Cant. por conversión": ingresa 1 (a menos que se indique otro valor)
+6. Si NO es el último producto: haz clic en "AGREGAR OTRO"
+7. Si ES el último producto: haz clic en "AGREGAR Y FINALIZAR"
 
 ${lineas.map((p, i) => `— PRODUCTO ${i+1} de ${lineas.length} —
   Campo Producto (EAN): ${p.ean}
