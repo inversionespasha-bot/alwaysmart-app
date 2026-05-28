@@ -1257,40 +1257,44 @@ function App() {
       if (partes.length === 3) fechaISO = `${partes[2]}-${partes[1].padStart(2,'0')}-${partes[0].padStart(2,'0')}`;
     } catch(e) {}
 
-    const script = `// =====================================================
-// ALWAYSMART — Automatización TouchPay
-// Factura: ${f.numero_factura} | ${f.proveedor}
-// Fecha: ${f.fecha_emision} | ${productos.length} productos
-// =====================================================
-// INSTRUCCIONES:
-// 1. Abre touchpay.market en Chrome con la extensión Claude in Chrome
-// 2. Ve a: Inventario → Compras → Agregar Nota → Manual
-// 3. Pega este script en el chat de Claude y envíalo
-// =====================================================
+    const script = `Estoy en touchpay.market en la pantalla de Compras. Necesito que automatices el ingreso completo de esta factura. Sigue estos pasos exactamente:
 
-Automatiza el ingreso de esta factura en TouchPay. 
-Estoy en la pantalla de "Agregar Nota Manual" en touchpay.market.
+━━━ PASO 1: ABRIR FORMULARIO ━━━
+Haz clic en el botón "AGREGAR NOTA", luego selecciona "Manual".
+Cuando aparezca el popup "¿Nueva página disponible?", haz clic en "CONTINUAR EN LA PÁGINA ACTUAL".
 
-PASO 1 — CABECERA DE LA NOTA:
-- Número de factura / Número de nota: ${f.numero_factura}
-- Clave de acceso: ${f.numero_factura}
-- Fecha de emisión: ${f.fecha_emision}${fechaISO ? ` (formato ISO: ${fechaISO})` : ""}
-- Inventario: ${INVENTARIO}
+━━━ PASO 2: INFORMACIÓN DE LA FACTURA ━━━
+En el formulario "Información de la Factura" llena:
+• Campo "Número de la factura": ${f.numero_factura}
+• Campo "Clave de acceso (NFe)": ${f.numero_factura}
+• Campo "Fecha de emisión": ${fechaISO || f.fecha_emision}
+• Campo "Inventario": escribe "${INVENTARIO}" y selecciónalo del dropdown
 
-PASO 2 — AGREGAR PRODUCTOS (${lineas.length} productos):
-Por cada producto, haz clic en "Agregar producto" o el botón equivalente, 
-luego busca por EAN/código de barras y llena precio y cantidad.
+Haz clic en "SIGUIENTE".
 
-${lineas.map((p, i) => `[${i+1}/${lineas.length}]
-  EAN / Código de barras: ${p.ean}
-  Nombre de referencia: ${p.nombre}
-  Precio unitario: ${p.precio}
-  Cantidad: ${p.cantidad}`).join('\n\n')}
+━━━ PASO 3: AGREGAR ${lineas.length} PRODUCTOS ━━━
+Ahora estás en "Agregar Manualmente". Por cada producto:
+1. En el campo "Producto" (dropdown con ícono de carrito), escribe el EAN y espera que filtre, luego selecciona la primera opción
+2. En "Valor en $": ingresa el precio unitario
+3. En "Unidad en la factura": ingresa la cantidad
+4. En "Cant. por conversión": ingresa 1 (a menos que se indique otro valor)
+5. Si NO es el último producto: haz clic en "AGREGAR OTRO"
+6. Si ES el último producto: haz clic en "AGREGAR Y FINALIZAR"
 
-PASO 3 — GUARDAR la nota.
+${lineas.map((p, i) => `— PRODUCTO ${i+1} de ${lineas.length} —
+  Campo Producto (EAN): ${p.ean}
+  Campo Valor en $: ${p.precio}
+  Campo Unidad en la factura: ${p.cantidad}
+  Campo Cant. por conversión: 1
+  Acción: ${i < lineas.length - 1 ? 'clic en "AGREGAR OTRO"' : 'clic en "AGREGAR Y FINALIZAR"'}`).join('\n\n')}
 
-${productosSinMapear.length > 0 ? `⚠️ ATENCIÓN: ${productosSinMapear.length} producto(s) NO tienen EAN en el maestro y deben ingresarse manualmente:
-${productosSinMapear.map(p => `  • ${p.descripcion}`).join('\n')}` : '✓ Todos los productos tienen EAN mapeado.'}`;
+━━━ PASO 4: DETALLES DE LA RECEPCIÓN ━━━
+En el paso 3 del formulario, confirma los datos y guarda la nota.
+
+${productosSinMapear.length > 0 ? `⚠️ ATENCIÓN — ${productosSinMapear.length} producto(s) sin EAN que debes agregar manualmente después:
+${productosSinMapear.map(p => `  • ${p.descripcion}`).join('\n')}` : '✓ Todos los productos tienen EAN mapeado — automatización completa.'}
+
+Proveedor: ${f.proveedor} | Factura: ${f.numero_factura} | ${lineas.length} productos`;
 
     return { script, lineas, productosSinMapear };
   };
@@ -1761,10 +1765,10 @@ ${productosSinMapear.map(p => `  • ${p.descripcion}`).join('\n')}` : '✓ Todo
               )}
 
               <ol className="tp-step-list">
-                <li><div className="tp-step-num">1</div><div>Abre <b>touchpay.market</b> en Chrome con la extensión <b>Claude in Chrome</b> activa.</div></li>
-                <li><div className="tp-step-num">2</div><div>Ve a: <b>Inventario → Compras → Agregar Nota → Manual</b></div></li>
-                <li><div className="tp-step-num">3</div><div>Haz clic en el ícono de Claude in Chrome (lateral o barra superior).</div></li>
-                <li><div className="tp-step-num">4</div><div>Copia el script de abajo y pégalo en el chat de Claude. Él llenará todo automáticamente.</div></li>
+                <li><div className="tp-step-num">1</div><div>Abre <b>touchpay.market</b> en Chrome y ve a <b>Compras</b>.</div></li>
+                <li><div className="tp-step-num">2</div><div>Haz clic en el ícono de <b>Claude in Chrome</b> en la barra lateral del navegador para abrir el chat.</div></li>
+                <li><div className="tp-step-num">3</div><div>Copia el script de abajo y pégalo en el chat de Claude. Él abre el formulario, llena todos los campos y agrega cada producto automáticamente.</div></li>
+                <li><div className="tp-step-num">4</div><div>Supervisa el proceso — Claude te avisará si algún producto no se encuentra por EAN.</div></li>
               </ol>
 
               <div style={{fontFamily:"Nunito,sans-serif",fontWeight:700,fontSize:12,color:"var(--muted)",marginBottom:6,textTransform:"uppercase",letterSpacing:".06em"}}>Script listo para Claude in Chrome:</div>
