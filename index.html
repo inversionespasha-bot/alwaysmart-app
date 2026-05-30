@@ -1129,8 +1129,14 @@ function App() {
         // Ignorar proveedores excluidos
         const NITS_IGNORAR = ["902032136"]; // EDS Autogas - gasolina, no va a TouchPay
         const DESCRIPCIONES_IGNORAR = ["EXHIBIDOR", "DISPLAY", "MATERIAL POP", "MATERIAL PUBLICITARIO", "E-BOLSA", "BOLSA EMPAQUE", "BOLSA DE EMPAQUE"];
-        if (DESCRIPCIONES_IGNORAR.some(d => resultado.productos?.some(p => p.nombre_normalizado?.toUpperCase().includes(d)))) {
-          resultado.productos = resultado.productos.filter(p => !DESCRIPCIONES_IGNORAR.some(d => p.nombre_normalizado?.toUpperCase().includes(d)));
+        const _ignorarProducto = (p) => DESCRIPCIONES_IGNORAR.some(d =>
+          (p.nombre_normalizado?.toUpperCase().includes(d)) ||
+          (p.descripcion?.toUpperCase().includes(d))
+        );
+        if (resultado.productos?.some(_ignorarProducto)) {
+          const ignorados = resultado.productos.filter(_ignorarProducto).map(p => p.descripcion || p.nombre_normalizado);
+          ignorados.forEach(n => addLog(`⊘ Ignorado: "${n}" — descripción excluida`, "lwarn"));
+          resultado.productos = resultado.productos.filter(p => !_ignorarProducto(p));
         }
         if (resultado.nit_proveedor && NITS_IGNORAR.includes(String(resultado.nit_proveedor).trim())) {
           addLog(`⊘ Ignorado: ${resultado.proveedor} — proveedor excluido (no requiere TouchPay)`, "lwarn");
@@ -1267,7 +1273,7 @@ Cuando aparezca el popup "¿Nueva página disponible?", haz clic en "CONTINUAR E
 En el formulario "Información de la Factura" llena:
 • Campo "Número de la factura": ${f.numero_factura}
 • Campo "Clave de acceso (NFe)": ${f.numero_factura}
-• Campo "Fecha de emisión": ${fechaISO || f.fecha_emision}
+• Campo "Fecha de emisión": haz clic en el ícono de calendario, navega al mes y año ${fechaISO ? fechaISO.substring(0,7) : f.fecha_emision} y selecciona el día ${fechaISO ? parseInt(fechaISO.substring(8,10)) : f.fecha_emision.substring(0,2)}
 • Campo "Inventario": escribe "${INVENTARIO}" y selecciónalo del dropdown
 
 Haz clic en "SIGUIENTE".
