@@ -1128,10 +1128,13 @@ function App() {
         const resultado = await analizarConIA(texto, file.name, addLog, file, apiKey);
         // Ignorar proveedores excluidos
         const NITS_IGNORAR = ["902032136"]; // EDS Autogas - gasolina, no va a TouchPay
+        // Términos que indican productos a ignorar — se comparan contra descripción original, nombre normalizado
+        // y desc_factura_original para capturar falsos positivos del mapeo IA (ej: E-BOLSA → FRESCOLANTA)
         const DESCRIPCIONES_IGNORAR = ["EXHIBIDOR", "DISPLAY", "MATERIAL POP", "MATERIAL PUBLICITARIO", "E-BOLSA", "BOLSA EMPAQUE", "BOLSA DE EMPAQUE"];
         const _ignorarProducto = (p) => DESCRIPCIONES_IGNORAR.some(d =>
+          (p.descripcion?.toUpperCase().includes(d)) ||
           (p.nombre_normalizado?.toUpperCase().includes(d)) ||
-          (p.descripcion?.toUpperCase().includes(d))
+          (p.desc_factura_original?.toUpperCase().includes(d))
         );
         if (resultado.productos?.some(_ignorarProducto)) {
           const ignorados = resultado.productos.filter(_ignorarProducto).map(p => p.descripcion || p.nombre_normalizado);
@@ -1273,7 +1276,7 @@ Cuando aparezca el popup "¿Nueva página disponible?", haz clic en "CONTINUAR E
 En el formulario "Información de la Factura" llena:
 • Campo "Número de la factura": ${f.numero_factura}
 • Campo "Clave de acceso (NFe)": ${f.numero_factura}
-• Campo "Fecha de emisión": haz clic en el ícono de calendario, navega al mes y año ${fechaISO ? fechaISO.substring(0,7) : f.fecha_emision} y selecciona el día ${fechaISO ? parseInt(fechaISO.substring(8,10)) : f.fecha_emision.substring(0,2)}
+• Campo "Fecha de emisión": haz clic en el ícono de calendario, navega al mes/año ${fechaISO ? fechaISO.substring(0,7) : f.fecha_emision} y selecciona el día ${fechaISO ? parseInt(fechaISO.substring(8,10)) : ""}
 • Campo "Inventario": escribe "${INVENTARIO}" y selecciónalo del dropdown
 
 Haz clic en "SIGUIENTE".
