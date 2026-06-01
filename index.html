@@ -351,12 +351,18 @@ PROVEEDOR COCA-COLA FEMSA (NIT 890903858) — reglas especiales:
 
 PROVEEDOR FRITOLAY / COMERCIALIZADORA NACIONAL SAS LTDA (NIT 830040709) — Pepsico:
   - Columnas: MATERIAL, DESCRIPCIÓN, CANT, UNIDAD, UN/CAJA, V. UNITARIO, DESCUENTO, IVA, VALOR NETO
-  - La columna UNIDAD dice "C/U" (cada unidad) → cantidad_por_conversion = 1 siempre
-  - El texto "20X1", "84X1" al final del nombre del producto es info del proveedor, ignorar para conversión
+  - COLUMNA CANT = cantidad de unidades individuales recibidas → usar como cantidad_factura
+  - COLUMNA UN/CAJA = unidades que caben en una caja del proveedor → IGNORAR COMPLETAMENTE para conversión
+  - COLUMNA UNIDAD dice "C/U" (cada unidad) → cantidad_por_conversion = 1 SIEMPRE sin excepción
+  - NUNCA multiplicar CANT × UN/CAJA — son columnas independientes
+  - El texto "20X1", "84X1", "135GX20X1" al final del nombre = info de empaque del proveedor, ignorar
   - IVA = 19% para todos los productos de este proveedor
-  - Sin descuentos generalmente
   - valor_unitario_costo = V. UNITARIO × 1.19
-  - Ejemplos: V.UNITARIO=$5.341 → valor_unitario_costo = 5341 × 1.19 = $6.356
+  - Ejemplos verificados con factura 4014-23438351:
+    * NATUCHIPS PLATANO VERDE 135GX20X1: CANT=8, UN/CAJA=8, V.UNIT=5341 → cantidad=8, conv=1, valor=5341×1.19=6356
+    * NATUCHIPS LISO LIMON 37GX84X1: CANT=20, UN/CAJA=20, V.UNIT=1594 → cantidad=20, conv=1, valor=1594×1.19=1897
+    * NATUCHIPS YUCA 38GX84X1: CANT=22, UN/CAJA=22, V.UNIT=1594 → cantidad=22, conv=1, valor=1594×1.19=1897
+    * MANI MOTO LIMON 70GX9X11: CANT=10, UN/CAJA=10, V.UNIT=1515 → cantidad=10, conv=1, valor=1515×1.19=1803
 
 PROVEEDOR LÁCTEOS ENVIGADO (NIT 811037487):
   - Columnas: Item, Código, Descripción, Cant, Unidad, V. Unit, DSC, IVA, Valor Total
@@ -998,7 +1004,7 @@ function App() {
     setGmailLoading(true);
     const client = window.google.accounts.oauth2.initTokenClient({
       client_id: "643298291395-ksk4egt0liaeemg3chop4lejpb8850pm.apps.googleusercontent.com",
-      scope: "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.labels https://www.googleapis.com/auth/gmail.modify",
+      scope: "https://www.googleapis.com/auth/gmail.readonly",
       callback: async (resp) => {
         if (resp.error) {
           addLog("✗ Error conectando Gmail: " + resp.error, "lerr");
@@ -1083,41 +1089,8 @@ function App() {
     }
     if (pdfs.length > 0) {
       setFiles(pdfs);
-      addLog(`✓ ${pdfs.length} PDFs listos — procesando facturas...`, "lok");
-      // Agregar label "Procesado TouchPay" a los correos procesados SIN marcarlos como leídos
-      try {
-        // Buscar o crear el label
-        const labelsRes = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/labels", {
-          headers: { Authorization: "Bearer " + gmailToken }
-        });
-        const labelsData = await labelsRes.json();
-        let labelId = (labelsData.labels || []).find(l => l.name === "Procesado TouchPay")?.id;
-        if (!labelId) {
-          const createRes = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/labels", {
-            method: "POST",
-            headers: { Authorization: "Bearer " + gmailToken, "Content-Type": "application/json" },
-            body: JSON.stringify({ name: "Procesado TouchPay", labelListVisibility: "labelShow", messageListVisibility: "show" })
-          });
-          const created = await createRes.json();
-          labelId = created.id;
-          addLog("→ Label 'Procesado TouchPay' creado en Gmail", "lok");
-        }
-        // Aplicar label a cada correo procesado (sin quitar UNREAD)
-        const msgIdsUnicos = [...new Set(archivos.map(a => a.msgId))];
-        for (const msgId of msgIdsUnicos) {
-          await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msgId}/modify`, {
-            method: "POST",
-            headers: { Authorization: "Bearer " + gmailToken, "Content-Type": "application/json" },
-            body: JSON.stringify({ addLabelIds: [labelId], removeLabelIds: [] })
-          });
-        }
-        addLog(`→ Label aplicado a ${msgIdsUnicos.length} correos (sin marcar como leídos)`, "lok");
-      } catch(e) {
-        addLog("⚠ No se pudo aplicar label: " + e.message, "lwarn");
-      }
+      addLog(`✓ ${pdfs.length} PDFs listos — ve a Procesar Facturas`, "lok");
       setTab("procesar");
-      // Arrancar procesamiento automático de IA
-      setTimeout(() => procesar(), 300);
     } else {
       addLog("No se encontraron PDFs nuevos", "lwarn");
     }
