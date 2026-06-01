@@ -998,7 +998,7 @@ function App() {
     setGmailLoading(true);
     const client = window.google.accounts.oauth2.initTokenClient({
       client_id: "643298291395-ksk4egt0liaeemg3chop4lejpb8850pm.apps.googleusercontent.com",
-      scope: "https://www.googleapis.com/auth/gmail.readonly",
+      scope: "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.labels https://www.googleapis.com/auth/gmail.modify",
       callback: async (resp) => {
         if (resp.error) {
           addLog("✗ Error conectando Gmail: " + resp.error, "lerr");
@@ -1083,8 +1083,41 @@ function App() {
     }
     if (pdfs.length > 0) {
       setFiles(pdfs);
-      addLog(`✓ ${pdfs.length} PDFs listos — ve a Procesar Facturas`, "lok");
+      addLog(`✓ ${pdfs.length} PDFs listos — procesando facturas...`, "lok");
+      // Agregar label "Procesado TouchPay" a los correos procesados SIN marcarlos como leídos
+      try {
+        // Buscar o crear el label
+        const labelsRes = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/labels", {
+          headers: { Authorization: "Bearer " + gmailToken }
+        });
+        const labelsData = await labelsRes.json();
+        let labelId = (labelsData.labels || []).find(l => l.name === "Procesado TouchPay")?.id;
+        if (!labelId) {
+          const createRes = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/labels", {
+            method: "POST",
+            headers: { Authorization: "Bearer " + gmailToken, "Content-Type": "application/json" },
+            body: JSON.stringify({ name: "Procesado TouchPay", labelListVisibility: "labelShow", messageListVisibility: "show" })
+          });
+          const created = await createRes.json();
+          labelId = created.id;
+          addLog("→ Label 'Procesado TouchPay' creado en Gmail", "lok");
+        }
+        // Aplicar label a cada correo procesado (sin quitar UNREAD)
+        const msgIdsUnicos = [...new Set(archivos.map(a => a.msgId))];
+        for (const msgId of msgIdsUnicos) {
+          await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msgId}/modify`, {
+            method: "POST",
+            headers: { Authorization: "Bearer " + gmailToken, "Content-Type": "application/json" },
+            body: JSON.stringify({ addLabelIds: [labelId], removeLabelIds: [] })
+          });
+        }
+        addLog(`→ Label aplicado a ${msgIdsUnicos.length} correos (sin marcar como leídos)`, "lok");
+      } catch(e) {
+        addLog("⚠ No se pudo aplicar label: " + e.message, "lwarn");
+      }
       setTab("procesar");
+      // Arrancar procesamiento automático de IA
+      setTimeout(() => procesar(), 300);
     } else {
       addLog("No se encontraron PDFs nuevos", "lwarn");
     }
@@ -1128,18 +1161,9 @@ function App() {
         const resultado = await analizarConIA(texto, file.name, addLog, file, apiKey);
         // Ignorar proveedores excluidos
         const NITS_IGNORAR = ["902032136"]; // EDS Autogas - gasolina, no va a TouchPay
-        // Términos que indican productos a ignorar — se comparan contra descripción original, nombre normalizado
-        // y desc_factura_original para capturar falsos positivos del mapeo IA (ej: E-BOLSA → FRESCOLANTA)
-        const DESCRIPCIONES_IGNORAR = ["EXHIBIDOR", "DISPLAY", "MATERIAL POP", "MATERIAL PUBLICITARIO", "E-BOLSA", "BOLSA EMPAQUE", "BOLSA DE EMPAQUE"];
-        const _ignorarProducto = (p) => DESCRIPCIONES_IGNORAR.some(d =>
-          (p.descripcion?.toUpperCase().includes(d)) ||
-          (p.nombre_normalizado?.toUpperCase().includes(d)) ||
-          (p.desc_factura_original?.toUpperCase().includes(d))
-        );
-        if (resultado.productos?.some(_ignorarProducto)) {
-          const ignorados = resultado.productos.filter(_ignorarProducto).map(p => p.descripcion || p.nombre_normalizado);
-          ignorados.forEach(n => addLog(`⊘ Ignorado: "${n}" — descripción excluida`, "lwarn"));
-          resultado.productos = resultado.productos.filter(p => !_ignorarProducto(p));
+        const DESCRIPCIONES_IGNORAR = ["EXHIBIDOR", "DISPLAY", "MATERIAL POP", "MATERIAL PUBLICITARIO"];
+        if (DESCRIPCIONES_IGNORAR.some(d => resultado.productos?.some(p => p.nombre_normalizado?.toUpperCase().includes(d)))) {
+          resultado.productos = resultado.productos.filter(p => !DESCRIPCIONES_IGNORAR.some(d => p.nombre_normalizado?.toUpperCase().includes(d)));
         }
         if (resultado.nit_proveedor && NITS_IGNORAR.includes(String(resultado.nit_proveedor).trim())) {
           addLog(`⊘ Ignorado: ${resultado.proveedor} — proveedor excluido (no requiere TouchPay)`, "lwarn");
@@ -1276,7 +1300,7 @@ Cuando aparezca el popup "¿Nueva página disponible?", haz clic en "CONTINUAR E
 En el formulario "Información de la Factura" llena:
 • Campo "Número de la factura": ${f.numero_factura}
 • Campo "Clave de acceso (NFe)": ${f.numero_factura}
-• Campo "Fecha de emisión": haz clic en el ícono de calendario, navega al mes/año ${fechaISO ? fechaISO.substring(0,7) : f.fecha_emision} y selecciona el día ${fechaISO ? parseInt(fechaISO.substring(8,10)) : ""}
+• Campo "Fecha de emisión": ${fechaISO || f.fecha_emision}
 • Campo "Inventario": escribe "${INVENTARIO}" y selecciónalo del dropdown
 
 Haz clic en "SIGUIENTE".
@@ -1286,10 +1310,9 @@ Ahora estás en "Agregar Manualmente". Por cada producto:
 1. En el campo "Producto" (dropdown con ícono de carrito), escribe el EAN y espera que filtre, luego selecciona la primera opción
 2. En "Valor en $": ingresa el precio unitario
 3. En "Unidad en la factura": ingresa la cantidad
-4. En "Unidad de conversión" (dropdown): selecciona "Unit"
-5. En "Cant. por conversión": ingresa 1 (a menos que se indique otro valor)
-6. Si NO es el último producto: haz clic en "AGREGAR OTRO"
-7. Si ES el último producto: haz clic en "AGREGAR Y FINALIZAR"
+4. En "Cant. por conversión": ingresa 1 (a menos que se indique otro valor)
+5. Si NO es el último producto: haz clic en "AGREGAR OTRO"
+6. Si ES el último producto: haz clic en "AGREGAR Y FINALIZAR"
 
 ${lineas.map((p, i) => `— PRODUCTO ${i+1} de ${lineas.length} —
   Campo Producto (EAN): ${p.ean}
