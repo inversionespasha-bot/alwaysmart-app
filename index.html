@@ -1038,6 +1038,31 @@ function App() {
     client.requestAccessToken();
   };
 
+
+  const buscarCorreosGmail = async () => {
+    if (!gmailToken) { addLog("✗ Gmail no conectado", "lerr"); return; }
+    setGmailLoading(true);
+    setGmailCorreos([]);
+    try {
+      const desdeDate = new Date(gmailDesde + "T00:00:00");
+      const despues = Math.floor(desdeDate.getTime() / 1000);
+      const query = "has:attachment (filename:zip OR filename:ZIP OR filename:.zip) after:" + despues;
+      addLog(`u2192 Buscando correos con ZIP desde ${desdeDate.toLocaleDateString("es-CO")}...`, "linf");
+      const res = await fetch(
+        "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=" + encodeURIComponent(query) + "&maxResults=50",
+        { headers: { Authorization: "Bearer " + gmailToken } }
+      );
+      const data = await res.json();
+      if (data.error) { addLog("✗ Error Gmail: " + data.error.message, "lerr"); setGmailLoading(false); return; }
+      const msgs = data.messages || [];
+      setGmailCorreos(msgs);
+      addLog(`u2192 ${msgs.length} correos con ZIP encontrados`, msgs.length > 0 ? "lok" : "lwrn");
+    } catch(e) {
+      addLog("✗ Error buscando correos: " + e.message, "lerr");
+    }
+    setGmailLoading(false);
+  };
+
   const procesarDesdeGmail = async () => {
     if (!gmailToken || !gmailCorreos.length) return;
     setGmailProcesando(true);
@@ -1643,33 +1668,45 @@ Proveedor: ${f.proveedor} | Factura: ${f.numero_factura} | ${lineas.length} prod
               </div>
             ) : (
               <div>
-                <div style={{background:"var(--green-light)",border:"1.5px solid #c8e6d0",borderRadius:12,padding:"14px 18px",marginBottom:20,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
-                  <div>
-                    <div style={{fontFamily:"Nunito,sans-serif",fontWeight:800,color:"var(--green)"}}>✓ Gmail conectado — inversionespasha@gmail.com</div>
-                    <div style={{fontFamily:"DM Mono,monospace",fontSize:11,color:"var(--muted)",marginTop:2}}>
-                      {gmailCorreos.length > 0
-                        ? `${gmailCorreos.length} correos con ZIP encontrados — listos para descargar`
-                        : "0 correos con ZIP encontrados · Ajusta la fecha y reconecta"}
-                      {ultimoProcesamiento && <span> · Último proceso: {new Date(ultimoProcesamiento).toLocaleString("es-CO")}</span>}
+                {/* Barra de estado Gmail */}
+                <div style={{background:"var(--green-light)",border:"1.5px solid #c8e6d0",borderRadius:12,padding:"14px 18px",marginBottom:16}}>
+                  {/* Fila superior: estado + desconectar */}
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8,marginBottom:12}}>
+                    <div>
+                      <div style={{fontFamily:"Nunito,sans-serif",fontWeight:800,color:"var(--green)"}}>✓ Gmail conectado — inversionespasha@gmail.com</div>
+                      <div style={{fontFamily:"DM Mono,monospace",fontSize:11,color:"var(--muted)",marginTop:2}}>
+                        {ultimoProcesamiento ? `Último proceso: ${new Date(ultimoProcesamiento).toLocaleString("es-CO")}` : "Sin procesamiento previo"}
+                      </div>
                     </div>
-                    <div style={{display:"flex",alignItems:"center",gap:8,marginTop:8}}>
-                      <span style={{fontFamily:"DM Mono,monospace",fontSize:11,color:"var(--muted)"}}>Buscar desde:</span>
-                      <input type="date" value={gmailDesde}
-                        onChange={e => { setGmailDesde(e.target.value); save("as_ultimo_gmail", new Date(e.target.value+"T00:00:00").toISOString()); setGmailCorreos([]); }}
-                        style={{fontFamily:"DM Mono,monospace",fontSize:12,padding:"2px 6px",borderRadius:4,border:"1.5px solid var(--border)",background:"var(--bg2)",color:"var(--text)"}}
-                      />
-                    </div>
-                  </div>
-                  <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-                    <button className="bsm bacc" onClick={procesarDesdeGmail} disabled={gmailProcesando || !gmailCorreos.length}>
-                      {gmailProcesando ? <><span className="spin"/>Descargando...</> : `⬇ Descargar ${gmailCorreos.length} facturas nuevas`}
-                    </button>
-                    <button className="bsm" style={{background:"var(--bg2)",color:"var(--text)",border:"1.5px solid var(--border)"}} onClick={()=>{const hoy=new Date().toISOString().slice(0,10);setGmailDesde(hoy);save("as_ultimo_gmail",null);setUltimoProcesamiento(null);setGmailCorreos([]);addLog("→ Fecha reseteada a hoy — ajusta si necesitas otro rango","linf");}}>
-                      🔄 Buscar todo
-                    </button>
-                    <button className="bsm bout" onClick={()=>{save("as_gmail_token",null);save("as_ultimo_gmail",null);setGmailToken(null);setUltimoProcesamiento(null);setGmailCorreos([]);}}>
+                    <button className="bsm bout" onClick={()=>{save("as_gmail_token",null);setGmailToken(null);setGmailCorreos([]);addLog("→ Gmail desconectado","linf");}}>
                       🔌 Desconectar
                     </button>
+                  </div>
+                  {/* Fila inferior: selector fecha + botones */}
+                  <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",paddingTop:10,borderTop:"1px solid #c8e6d0"}}>
+                    <span style={{fontFamily:"DM Mono,monospace",fontSize:12,color:"var(--text)",fontWeight:600}}>Buscar desde:</span>
+                    <input type="date" value={gmailDesde}
+                      onChange={e => { setGmailDesde(e.target.value); save("as_ultimo_gmail", new Date(e.target.value+"T00:00:00").toISOString()); setGmailCorreos([]); }}
+                      style={{fontFamily:"DM Mono,monospace",fontSize:12,padding:"4px 8px",borderRadius:6,border:"1.5px solid var(--border)",background:"var(--bg)",color:"var(--text)"}}
+                    />
+                    <button className="bsm bacc" onClick={buscarCorreosGmail} disabled={gmailLoading}>
+                      {gmailLoading ? <><span className="spin"/>Buscando...</> : "🔍 Buscar"}
+                    </button>
+                    {gmailCorreos.length > 0 && (
+                      <button className="bsm bacc" style={{background:"#1a7f4b"}} onClick={procesarDesdeGmail} disabled={gmailProcesando}>
+                        {gmailProcesando ? <><span className="spin"/>Descargando...</> : `⬇ Descargar ${gmailCorreos.length} facturas`}
+                      </button>
+                    )}
+                    {gmailCorreos.length > 0 && (
+                      <span style={{fontFamily:"DM Mono,monospace",fontSize:11,color:"var(--green)",fontWeight:700}}>
+                        {gmailCorreos.length} correos encontrados
+                      </span>
+                    )}
+                    {gmailCorreos.length === 0 && !gmailLoading && (
+                      <span style={{fontFamily:"DM Mono,monospace",fontSize:11,color:"var(--muted)"}}>
+                        Escoge la fecha y haz clic en Buscar
+                      </span>
+                    )}
                   </div>
                 </div>
                 <div className="logbox" ref={logRef}>
