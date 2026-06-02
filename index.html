@@ -977,6 +977,7 @@ function App() {
   const [gmailToken, setGmailToken] = useState(() => load("as_gmail_token", null));
   const [gmailLoading, setGmailLoading] = useState(false);
   const [gmailCorreos, setGmailCorreos] = useState([]);
+  const [gmailPdfs, setGmailPdfs] = useState([]); // nombres de PDFs extraídos de ZIPs
   const [gmailProcesando, setGmailProcesando] = useState(false);
   const [ultimoProcesamiento, setUltimoProcesamiento] = useState(() => load("as_ultimo_gmail", null));
   const [gmailDesde, setGmailDesde] = useState(() => { const u = load("as_ultimo_gmail", null); return u ? new Date(u).toISOString().slice(0,10) : new Date().toISOString().slice(0,10); });
@@ -1032,13 +1033,14 @@ function App() {
     if (!gmailToken) { addLog("✗ Gmail no conectado", "lerr"); return; }
     setGmailLoading(true);
     setGmailCorreos([]);
+    setGmailPdfs([]);
     const ejecutarBusqueda = async (token) => {
       const desdeDate = new Date(gmailDesde + "T00:00:00");
       const despues = Math.floor(desdeDate.getTime() / 1000);
       const query = "has:attachment (filename:zip OR filename:ZIP OR filename:.zip) after:" + despues;
       addLog(`→ Buscando correos con ZIP desde ${desdeDate.toLocaleDateString("es-CO")}...`, "linf");
       const res = await fetch(
-        "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=" + encodeURIComponent(query) + "&maxResults=50",
+        "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=" + encodeURIComponent(query) + "&maxResults=50&format=metadata&metadataHeaders=From&metadataHeaders=Subject",
         { headers: { Authorization: "Bearer " + token } }
       );
       return res.json();
@@ -1054,9 +1056,17 @@ function App() {
         data = await ejecutarBusqueda(nuevoToken);
       }
       if (data.error) { addLog("✗ Error Gmail: " + data.error.message, "lerr"); setGmailLoading(false); return; }
-      const msgs = data.messages || [];
+      const msgs = (data.messages || []).map(m => {
+        // Extraer nombre del remitente del header From
+        const fromHeader = m.payload?.headers?.find(h => h.name === "From")?.value || "";
+        const fromName = fromHeader.replace(/<[^>]+>/g,"").replace(/"/g,"").trim() || "Proveedor desconocido";
+        return { ...m, remitente: fromName };
+      });
       setGmailCorreos(msgs);
-      addLog(`→ ${msgs.length} correos con ZIP encontrados`, msgs.length > 0 ? "lok" : "lwrn");
+      // Agrupar por remitente para el log
+      const porRemitente = msgs.reduce((acc, m) => { acc[m.remitente] = (acc[m.remitente]||0)+1; return acc; }, {});
+      const resumen = Object.entries(porRemitente).map(([r,n]) => `${r} (${n})`).join(" · ");
+      addLog(`→ ${msgs.length} correos encontrados: ${resumen}`, msgs.length > 0 ? "lok" : "lwrn");
     } catch(e) {
       addLog("✗ Error: " + e + " — intenta desconectar y reconectar Gmail", "lerr");
     }
@@ -1109,7 +1119,9 @@ function App() {
         for (const [nombre, archivo] of Object.entries(zip.files)) {
           if (nombre.toLowerCase().endsWith('.pdf')) {
             const pdfBytes = await archivo.async('arraybuffer');
-            pdfs.push(new File([pdfBytes], nombre, { type: 'application/pdf' }));
+            const pdfFile = new File([pdfBytes], nombre, { type: 'application/pdf' });
+            pdfFile._remitente = msg.remitente || null;
+            pdfs.push(pdfFile);
             addLog(`→ PDF extraído: ${nombre}`, "lok");
           }
         }
@@ -1117,6 +1129,11 @@ function App() {
     }
     if (pdfs.length > 0) {
       setFiles(pdfs);
+      // Asociar cada PDF con el remitente de su correo de origen
+      setGmailPdfs(pdfs.map(p => ({
+        nombre: p.name.replace(/\.pdf$/i,"").slice(0,40),
+        remitente: p._remitente || null
+      })));
       addLog(`✓ ${pdfs.length} PDFs listos — procesando facturas...`, "lok");
       try {
         const labelsRes = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/labels", {
@@ -1406,10 +1423,23 @@ Proveedor: ${f.proveedor} | Factura: ${f.numero_factura} | ${lineas.length} prod
     return { script, lineas, productosSinMapear };
   };
 
+  const [scriptCopiado, setScriptCopiado] = useState(false);
+
   const copiarScriptTP = (f) => {
     const { script } = generarScriptTP(f, cantidadesReales, correcciones);
-    navigator.clipboard.writeText(script);
-    alert(`✓ Script de ${(f.productos||[]).filter(p=>p.cod_barras_touchpay).length} productos copiado al portapapeles.\n\nPégalo en el chat de Claude in Chrome con TouchPay abierto.`);
+    navigator.clipboard.writeText(script).then(() => {
+      setScriptCopiado(true);
+      setTimeout(() => setScriptCopiado(false), 4000);
+    });
+  };
+
+  const lanzarEnTouchPay = (f) => {
+    const { script } = generarScriptTP(f, cantidadesReales, correcciones);
+    navigator.clipboard.writeText(script).then(() => {
+      window.open('https://touchpay.market/?#/notas', '_blank');
+      setScriptCopiado(true);
+      setTimeout(() => setScriptCopiado(false), 10000);
+    });
   };
 
   const copiarTP = (f) => {
@@ -1750,6 +1780,37 @@ Proveedor: ${f.proveedor} | Factura: ${f.numero_factura} | ${lineas.length} prod
                       </span>
                     )}
                   </div>
+                  {/* Preview PDFs extraídos */}
+                  {/* Preview por remitente antes de descargar */}
+                  {gmailCorreos.length > 0 && gmailPdfs.length === 0 && (
+                    <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid #c8e6d0"}}>
+                      <div style={{fontFamily:"DM Mono,monospace",fontSize:11,color:"var(--muted)",marginBottom:6,textTransform:"uppercase",letterSpacing:".05em"}}>Proveedores en cola:</div>
+                      <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                        {Object.entries(gmailCorreos.reduce((acc,m)=>{ acc[m.remitente||"Desconocido"]=(acc[m.remitente||"Desconocido"]||0)+1; return acc; },{})).map(([rem,n],i)=>(
+                          <div key={i} style={{display:"flex",alignItems:"center",gap:5,padding:"5px 12px",borderRadius:20,background:"var(--green-light)",border:"1px solid #c8e6d0",fontFamily:"DM Mono,monospace",fontSize:11,color:"var(--green)"}}>
+                            <span>📧</span>
+                            <span style={{fontWeight:700}}>{rem}</span>
+                            <span style={{color:"var(--muted)"}}>· {n} {n===1?"correo":"correos"}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {/* Preview PDFs extraídos con remitente */}
+                  {gmailPdfs.length > 0 && (
+                    <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid #c8e6d0"}}>
+                      <div style={{fontFamily:"DM Mono,monospace",fontSize:11,color:"var(--muted)",marginBottom:6,textTransform:"uppercase",letterSpacing:".05em"}}>Facturas descargadas y en cola:</div>
+                      <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                        {gmailPdfs.map((item,i)=>(
+                          <div key={i} style={{display:"flex",alignItems:"center",gap:5,padding:"5px 12px",borderRadius:20,background:"var(--green-light)",border:"1px solid #c8e6d0",fontFamily:"DM Mono,monospace",fontSize:11,color:"var(--green)"}}>
+                            <span>📄</span>
+                            {item.remitente && <span style={{fontWeight:700,color:"var(--text)"}}>{item.remitente} —</span>}
+                            <span>{item.nombre || item}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <div className="logbox" ref={logRef}>
                   {logs.map((l,i)=><div key={i} className={l.type}>[{l.t}] {l.msg}</div>)}
@@ -1947,16 +2008,33 @@ Proveedor: ${f.proveedor} | Factura: ${f.numero_factura} | ${lineas.length} prod
               <div style={{fontFamily:"Nunito,sans-serif",fontWeight:700,fontSize:12,color:"var(--muted)",marginBottom:6,textTransform:"uppercase",letterSpacing:".06em"}}>Script listo para Claude in Chrome:</div>
               <div className="tp-script-box">{script}</div>
 
+              {/* Botón principal RUN */}
+              <button className="btn-main" style={{width:"100%",marginBottom:10,fontSize:14,padding:"12px"}}
+                onClick={()=>lanzarEnTouchPay(tpModal)}>
+                🚀 Copiar script y abrir TouchPay
+              </button>
+
+              {scriptCopiado && (
+                <div style={{padding:"12px 16px",background:"#e8f5e9",border:"1.5px solid #4caf50",borderRadius:10,marginBottom:10}}>
+                  <div style={{fontFamily:"Nunito,sans-serif",fontWeight:800,fontSize:13,color:"#1a7f4b",marginBottom:6}}>
+                    ✅ Script copiado — TouchPay abierto
+                  </div>
+                  <div style={{fontFamily:"DM Mono,monospace",fontSize:12,color:"var(--text)",lineHeight:1.6}}>
+                    Ahora en la pestaña de TouchPay:<br/>
+                    1. Haz clic en el ícono de <b>Claude</b> 🤖 en la barra del navegador<br/>
+                    2. Escribe <b>/Ingresar-Factura-Pasha</b> y presiona Enter<br/>
+                    3. El bot hace todo el resto solo ✓
+                  </div>
+                </div>
+              )}
+
               <div className="tp-actions">
-                <button className="bsm btp" onClick={()=>copiarScriptTP(tpModal)}>📋 Copiar script</button>
-                <button className="bsm bout" onClick={()=>{
-                  window.open('https://touchpay.market', '_blank');
-                }}>🌐 Abrir TouchPay</button>
+                <button className="bsm btp" onClick={()=>copiarScriptTP(tpModal)}>📋 Solo copiar script</button>
                 <button className="bsm bdanger" onClick={()=>setTpModal(null)}>✕ Cerrar</button>
               </div>
 
-              <div style={{marginTop:14,padding:"10px 14px",background:"var(--green-light)",borderRadius:8,fontSize:11,fontFamily:"DM Mono,monospace",color:"var(--green)"}}>
-                ✓ Datos listos: factura <b>{tpModal.numero_factura}</b> · {lineas.length} EANs · inventario <b>{INVENTARIO}</b>
+              <div style={{marginTop:10,padding:"8px 14px",background:"var(--green-light)",borderRadius:8,fontSize:11,fontFamily:"DM Mono,monospace",color:"var(--green)"}}>
+                ✓ Factura <b>{tpModal.numero_factura}</b> · {lineas.length} productos · inventario <b>{INVENTARIO}</b>
               </div>
             </div>
           </div>
