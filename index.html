@@ -998,67 +998,65 @@ function App() {
   };
 
 
-  const conectarGmail = () => {
-    setGmailLoading(true);
+  // Obtiene un token fresco — silencioso si ya está autorizado, popup solo si es necesario
+  const obtenerTokenFresco = (silencioso = false) => new Promise((resolve, reject) => {
     const client = window.google.accounts.oauth2.initTokenClient({
       client_id: "643298291395-ksk4egt0liaeemg3chop4lejpb8850pm.apps.googleusercontent.com",
       scope: "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.labels https://www.googleapis.com/auth/gmail.modify",
-      callback: async (resp) => {
-        if (resp.error) {
-          addLog("✗ Error conectando Gmail: " + resp.error, "lerr");
-          setGmailLoading(false);
-          return;
-        }
-        setGmailToken(resp.access_token);
-        save("as_gmail_token", resp.access_token);
-        addLog("✓ Gmail conectado", "lok");
-        try {
-          // Query base: busca adjuntos ZIP
-          let query = "has:attachment (filename:zip OR filename:ZIP OR filename:.zip)";
-          // Siempre usar la fecha visible del selector gmailDesde
-          const desdeDate = new Date(gmailDesde + "T00:00:00");
-          const despues = Math.floor(desdeDate.getTime() / 1000);
-          query += " after:" + despues;
-          addLog(`→ Buscando correos con ZIP desde ${desdeDate.toLocaleDateString("es-CO")}...`, "linf");
-          const res = await fetch(
-            "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=" + encodeURIComponent(query) + "&maxResults=50",
-            { headers: { Authorization: "Bearer " + resp.access_token } }
-          );
-          const data = await res.json();
-          const msgs = data.messages || [];
-          setGmailCorreos(msgs);
-          addLog(`→ ${msgs.length} correos con ZIP encontrados`, msgs.length > 0 ? "lok" : "lwrn");
-          // NOTA: as_ultimo_gmail se guarda solo al FINALIZAR el procesamiento exitoso (no aquí)
-        } catch(e) {
-          addLog("✗ Error buscando correos: " + e.message, "lerr");
-        }
-        setGmailLoading(false);
+      prompt: silencioso ? "none" : "",
+      callback: (resp) => {
+        if (resp.error) reject(resp.error);
+        else resolve(resp.access_token);
       }
     });
     client.requestAccessToken();
+  });
+
+  const conectarGmail = async () => {
+    setGmailLoading(true);
+    try {
+      const token = await obtenerTokenFresco(false);
+      setGmailToken(token);
+      save("as_gmail_token", token);
+      addLog("✓ Gmail conectado", "lok");
+    } catch(e) {
+      addLog("✗ Error conectando Gmail: " + e, "lerr");
+    }
+    setGmailLoading(false);
   };
 
-
+  // Busca correos — si el token expiró lo refresca automáticamente sin popup
   const buscarCorreosGmail = async () => {
     if (!gmailToken) { addLog("✗ Gmail no conectado", "lerr"); return; }
     setGmailLoading(true);
     setGmailCorreos([]);
-    try {
+    const ejecutarBusqueda = async (token) => {
       const desdeDate = new Date(gmailDesde + "T00:00:00");
       const despues = Math.floor(desdeDate.getTime() / 1000);
       const query = "has:attachment (filename:zip OR filename:ZIP OR filename:.zip) after:" + despues;
-      addLog(`u2192 Buscando correos con ZIP desde ${desdeDate.toLocaleDateString("es-CO")}...`, "linf");
+      addLog(`→ Buscando correos con ZIP desde ${desdeDate.toLocaleDateString("es-CO")}...`, "linf");
       const res = await fetch(
         "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=" + encodeURIComponent(query) + "&maxResults=50",
-        { headers: { Authorization: "Bearer " + gmailToken } }
+        { headers: { Authorization: "Bearer " + token } }
       );
-      const data = await res.json();
+      return res.json();
+    };
+    try {
+      let data = await ejecutarBusqueda(gmailToken);
+      // Token expirado → refrescar silenciosamente y reintentar
+      if (data.error && (data.error.code === 401 || data.error.status === "UNAUTHENTICATED")) {
+        addLog("→ Token expirado — refrescando automáticamente...", "linf");
+        const nuevoToken = await obtenerTokenFresco(true);
+        setGmailToken(nuevoToken);
+        save("as_gmail_token", nuevoToken);
+        data = await ejecutarBusqueda(nuevoToken);
+      }
       if (data.error) { addLog("✗ Error Gmail: " + data.error.message, "lerr"); setGmailLoading(false); return; }
       const msgs = data.messages || [];
       setGmailCorreos(msgs);
-      addLog(`u2192 ${msgs.length} correos con ZIP encontrados`, msgs.length > 0 ? "lok" : "lwrn");
+      addLog(`→ ${msgs.length} correos con ZIP encontrados`, msgs.length > 0 ? "lok" : "lwrn");
     } catch(e) {
-      addLog("✗ Error buscando correos: " + e.message, "lerr");
+      addLog("✗ Error: " + e + " — intenta desconectar y reconectar Gmail", "lerr");
     }
     setGmailLoading(false);
   };
@@ -1066,13 +1064,20 @@ function App() {
   const procesarDesdeGmail = async () => {
     if (!gmailToken || !gmailCorreos.length) return;
     setGmailProcesando(true);
+    // Refrescar token silenciosamente antes de descargar
+    let tokenActivo = gmailToken;
+    try {
+      tokenActivo = await obtenerTokenFresco(true);
+      setGmailToken(tokenActivo);
+      save("as_gmail_token", tokenActivo);
+    } catch(e) { /* usar token actual si falla refresh silencioso */ }
     addLog(`📧 Descargando facturas de ${gmailCorreos.length} correos...`, "linf");
     const archivos = [];
     for (const msg of gmailCorreos.slice(0, 20)) {
       try {
         const res = await fetch(
           `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=full`,
-          { headers: { Authorization: "Bearer " + gmailToken } }
+          { headers: { Authorization: "Bearer " + tokenActivo } }
         );
         const msgData = await res.json();
         const buscarAdjuntos = (partes) => {
@@ -1093,7 +1098,7 @@ function App() {
       try {
         const res = await fetch(
           `https://gmail.googleapis.com/gmail/v1/users/me/messages/${adj.msgId}/attachments/${adj.attId}`,
-          { headers: { Authorization: "Bearer " + gmailToken } }
+          { headers: { Authorization: "Bearer " + tokenActivo } }
         );
         const attData = await res.json();
         const b64 = attData.data.replace(/-/g,'+').replace(/_/g,'/');
@@ -1113,14 +1118,14 @@ function App() {
       addLog(`✓ ${pdfs.length} PDFs listos — procesando facturas...`, "lok");
       try {
         const labelsRes = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/labels", {
-          headers: { Authorization: "Bearer " + gmailToken }
+          headers: { Authorization: "Bearer " + tokenActivo }
         });
         const labelsData = await labelsRes.json();
         let labelId = (labelsData.labels || []).find(l => l.name === "Procesado TouchPay")?.id;
         if (!labelId) {
           const createRes = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/labels", {
             method: "POST",
-            headers: { Authorization: "Bearer " + gmailToken, "Content-Type": "application/json" },
+            headers: { Authorization: "Bearer " + tokenActivo, "Content-Type": "application/json" },
             body: JSON.stringify({ name: "Procesado TouchPay", labelListVisibility: "labelShow", messageListVisibility: "show" })
           });
           const created = await createRes.json();
@@ -1131,7 +1136,7 @@ function App() {
         for (const msgId of msgIdsUnicos) {
           await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msgId}/modify`, {
             method: "POST",
-            headers: { Authorization: "Bearer " + gmailToken, "Content-Type": "application/json" },
+            headers: { Authorization: "Bearer " + tokenActivo, "Content-Type": "application/json" },
             body: JSON.stringify({ addLabelIds: [labelId], removeLabelIds: [] })
           });
         }
