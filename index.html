@@ -1013,20 +1013,17 @@ function App() {
         addLog("✓ Gmail conectado", "lok");
         try {
           const ultimo = load("as_ultimo_gmail", null);
-          let query = "has:attachment filename:zip";
+          // Query base: busca adjuntos ZIP (también .ZIP mayúsculas) o archivos que contengan facturas
+          let query = "has:attachment (filename:zip OR filename:ZIP OR filename:.zip)";
+          let logMsg = "→ Primera conexión — buscando TODOS los correos con ZIP...";
           if (ultimo) {
-            // Convertir fecha guardada a epoch segundos para Gmail
+            // Tiene historial: buscar desde el último procesamiento exitoso
             const despues = Math.floor(new Date(ultimo).getTime() / 1000);
             query += " after:" + despues;
-            addLog(`→ Buscando correos nuevos desde ${new Date(ultimo).toLocaleDateString("es-CO")}...`, "linf");
-          } else {
-            const hoy = new Date();
-            hoy.setHours(0,0,0,0);
-            const despues = Math.floor(hoy.getTime() / 1000);
-            query += " after:" + despues;
-            addLog("→ Primera conexión — buscando solo correos de hoy en adelante...", "linf");
-            save("as_ultimo_gmail", hoy.toISOString());
+            logMsg = `→ Buscando correos nuevos desde ${new Date(ultimo).toLocaleDateString("es-CO")}...`;
           }
+          // Si es primera conexión NO se agrega filtro de fecha → busca todo el historial
+          addLog(logMsg, "linf");
           const res = await fetch(
             "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=" + encodeURIComponent(query) + "&maxResults=50",
             { headers: { Authorization: "Bearer " + resp.access_token } }
@@ -1034,7 +1031,8 @@ function App() {
           const data = await res.json();
           const msgs = data.messages || [];
           setGmailCorreos(msgs);
-          addLog(`→ ${msgs.length} correos con ZIP encontrados`, "lok");
+          addLog(`→ ${msgs.length} correos con ZIP encontrados`, msgs.length > 0 ? "lok" : "lwrn");
+          // NOTA: as_ultimo_gmail se guarda solo al FINALIZAR el procesamiento exitoso (no aquí)
         } catch(e) {
           addLog("✗ Error buscando correos: " + e.message, "lerr");
         }
@@ -1652,14 +1650,18 @@ Proveedor: ${f.proveedor} | Factura: ${f.numero_factura} | ${lineas.length} prod
                   <div>
                     <div style={{fontFamily:"Nunito,sans-serif",fontWeight:800,color:"var(--green)"}}>✓ Gmail conectado — inversionespasha@gmail.com</div>
                     <div style={{fontFamily:"DM Mono,monospace",fontSize:11,color:"var(--muted)",marginTop:2}}>
-                      {gmailCorreos.length} correos nuevos con ZIP encontrados
-                      {ultimoProcesamiento && <span> · Último procesamiento: {new Date(ultimoProcesamiento).toLocaleString("es-CO")}</span>}
-                      {!ultimoProcesamiento && <span> · Primera conexión — buscando todos los correos</span>}
+                      {gmailCorreos.length > 0
+                        ? `${gmailCorreos.length} correos con ZIP encontrados — listos para descargar`
+                        : "0 correos con ZIP encontrados · Reconecta para buscar de nuevo"}
+                      {ultimoProcesamiento && <span> · Último proceso: {new Date(ultimoProcesamiento).toLocaleString("es-CO")}</span>}
                     </div>
                   </div>
                   <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-                    <button className="bsm bacc" onClick={procesarDesdeGmail} disabled={gmailProcesando}>
+                    <button className="bsm bacc" onClick={procesarDesdeGmail} disabled={gmailProcesando || !gmailCorreos.length}>
                       {gmailProcesando ? <><span className="spin"/>Descargando...</> : `⬇ Descargar ${gmailCorreos.length} facturas nuevas`}
+                    </button>
+                    <button className="bsm" style={{background:"var(--bg2)",color:"var(--text)",border:"1.5px solid var(--border)"}} onClick={()=>{save("as_ultimo_gmail",null);setUltimoProcesamiento(null);setGmailCorreos([]);addLog("→ Historial limpiado — reconecta para buscar todos los correos","linf");}}>
+                      🔄 Buscar todo
                     </button>
                     <button className="bsm bout" onClick={()=>{save("as_gmail_token",null);save("as_ultimo_gmail",null);setGmailToken(null);setUltimoProcesamiento(null);setGmailCorreos([]);}}>
                       🔌 Desconectar
