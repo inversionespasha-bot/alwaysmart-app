@@ -979,6 +979,7 @@ function App() {
   const [gmailCorreos, setGmailCorreos] = useState([]);
   const [gmailProcesando, setGmailProcesando] = useState(false);
   const [ultimoProcesamiento, setUltimoProcesamiento] = useState(() => load("as_ultimo_gmail", null));
+  const [gmailDesde, setGmailDesde] = useState(() => { const u = load("as_ultimo_gmail", null); return u ? new Date(u).toISOString().slice(0,10) : new Date().toISOString().slice(0,10); });
   const [tpModal, setTpModal] = useState(null); // factura activa en modal TouchPay
   const logRef = useRef();
 
@@ -1012,18 +1013,13 @@ function App() {
         save("as_gmail_token", resp.access_token);
         addLog("✓ Gmail conectado", "lok");
         try {
-          const ultimo = load("as_ultimo_gmail", null);
-          // Query base: busca adjuntos ZIP (también .ZIP mayúsculas) o archivos que contengan facturas
+          // Query base: busca adjuntos ZIP
           let query = "has:attachment (filename:zip OR filename:ZIP OR filename:.zip)";
-          let logMsg = "→ Primera conexión — buscando TODOS los correos con ZIP...";
-          if (ultimo) {
-            // Tiene historial: buscar desde el último procesamiento exitoso
-            const despues = Math.floor(new Date(ultimo).getTime() / 1000);
-            query += " after:" + despues;
-            logMsg = `→ Buscando correos nuevos desde ${new Date(ultimo).toLocaleDateString("es-CO")}...`;
-          }
-          // Si es primera conexión NO se agrega filtro de fecha → busca todo el historial
-          addLog(logMsg, "linf");
+          // Siempre usar la fecha visible del selector gmailDesde
+          const desdeDate = new Date(gmailDesde + "T00:00:00");
+          const despues = Math.floor(desdeDate.getTime() / 1000);
+          query += " after:" + despues;
+          addLog(`→ Buscando correos con ZIP desde ${desdeDate.toLocaleDateString("es-CO")}...`, "linf");
           const res = await fetch(
             "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=" + encodeURIComponent(query) + "&maxResults=50",
             { headers: { Authorization: "Bearer " + resp.access_token } }
@@ -1126,6 +1122,7 @@ function App() {
     const ahora = new Date().toISOString();
     save("as_ultimo_gmail", ahora);
     setUltimoProcesamiento(ahora);
+    setGmailDesde(new Date(ahora).toISOString().slice(0,10));
     addLog(`✓ Próxima vez solo buscará correos nuevos desde ahora`, "lok");
     setGmailProcesando(false);
   };
@@ -1652,15 +1649,22 @@ Proveedor: ${f.proveedor} | Factura: ${f.numero_factura} | ${lineas.length} prod
                     <div style={{fontFamily:"DM Mono,monospace",fontSize:11,color:"var(--muted)",marginTop:2}}>
                       {gmailCorreos.length > 0
                         ? `${gmailCorreos.length} correos con ZIP encontrados — listos para descargar`
-                        : "0 correos con ZIP encontrados · Reconecta para buscar de nuevo"}
+                        : "0 correos con ZIP encontrados · Ajusta la fecha y reconecta"}
                       {ultimoProcesamiento && <span> · Último proceso: {new Date(ultimoProcesamiento).toLocaleString("es-CO")}</span>}
+                    </div>
+                    <div style={{display:"flex",alignItems:"center",gap:8,marginTop:8}}>
+                      <span style={{fontFamily:"DM Mono,monospace",fontSize:11,color:"var(--muted)"}}>Buscar desde:</span>
+                      <input type="date" value={gmailDesde}
+                        onChange={e => { setGmailDesde(e.target.value); save("as_ultimo_gmail", new Date(e.target.value+"T00:00:00").toISOString()); setGmailCorreos([]); }}
+                        style={{fontFamily:"DM Mono,monospace",fontSize:12,padding:"2px 6px",borderRadius:4,border:"1.5px solid var(--border)",background:"var(--bg2)",color:"var(--text)"}}
+                      />
                     </div>
                   </div>
                   <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
                     <button className="bsm bacc" onClick={procesarDesdeGmail} disabled={gmailProcesando || !gmailCorreos.length}>
                       {gmailProcesando ? <><span className="spin"/>Descargando...</> : `⬇ Descargar ${gmailCorreos.length} facturas nuevas`}
                     </button>
-                    <button className="bsm" style={{background:"var(--bg2)",color:"var(--text)",border:"1.5px solid var(--border)"}} onClick={()=>{save("as_ultimo_gmail",null);setUltimoProcesamiento(null);setGmailCorreos([]);addLog("→ Historial limpiado — reconecta para buscar todos los correos","linf");}}>
+                    <button className="bsm" style={{background:"var(--bg2)",color:"var(--text)",border:"1.5px solid var(--border)"}} onClick={()=>{const hoy=new Date().toISOString().slice(0,10);setGmailDesde(hoy);save("as_ultimo_gmail",null);setUltimoProcesamiento(null);setGmailCorreos([]);addLog("→ Fecha reseteada a hoy — ajusta si necesitas otro rango","linf");}}>
                       🔄 Buscar todo
                     </button>
                     <button className="bsm bout" onClick={()=>{save("as_gmail_token",null);save("as_ultimo_gmail",null);setGmailToken(null);setUltimoProcesamiento(null);setGmailCorreos([]);}}>
