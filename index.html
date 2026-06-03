@@ -1131,8 +1131,11 @@ function App() {
     } catch(e) { /* usar token actual si falla refresh silencioso */ }
     addLog(`📧 Descargando facturas de ${gmailCorreos.length} correos...`, "linf");
     const archivos = [];
+    addLog(`→ Procesando ${gmailCorreos.length} correos, token: ${tokenActivo ? "OK" : "FALTA"}`, "linf");
     for (const msg of gmailCorreos.slice(0, 20)) {
       try {
+        if (!msg.id) { addLog("✗ Correo sin ID: " + JSON.stringify(msg), "lerr"); continue; }
+        addLog(`→ Descargando mensaje ${msg.id}...`, "linf");
         const res = await fetch(
           `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=full`,
           { headers: { Authorization: "Bearer " + tokenActivo } }
