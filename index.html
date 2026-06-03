@@ -990,16 +990,18 @@ async function analizarConIA(texto, archivo, onLog, file=null, apiKey='') {
 
 function detectarDup(texto) {
   if (!texto) return null;
+  // Normalizar texto: quitar comas de números (36,070 → 36070) para comparar
+  const textoNorm = texto.replace(/([0-9]),([0-9])/g, "$1$2");
   const procesados = load("as_procesados", {});
   for (const key of Object.keys(procesados)) {
     const entry = procesados[key];
-    const num = (entry.numero || "").toString().trim();
+    const num = (entry.numero || "").toString().trim().replace(/,/g, "");
     if (!num || num.length < 4) continue;
-    // Buscar número rodeado de no-dígitos o inicio/fin de string
-    const idx = texto.indexOf(num);
+    // Buscar en texto normalizado, rodeado de no-dígitos
+    const idx = textoNorm.indexOf(num);
     if (idx === -1) continue;
-    const antes = idx === 0 ? " " : texto[idx - 1];
-    const despues = idx + num.length >= texto.length ? " " : texto[idx + num.length];
+    const antes = idx === 0 ? " " : textoNorm[idx - 1];
+    const despues = idx + num.length >= textoNorm.length ? " " : textoNorm[idx + num.length];
     const esDigito = c => c >= "0" && c <= "9";
     if (!esDigito(antes) && !esDigito(despues)) return entry;
   }
@@ -2156,13 +2158,9 @@ Proveedor: ${f.proveedor} | Factura: ${f.numero_factura} | ${lineas.length} prod
                             </span>
                           )}
                           <button className="bsm bout" style={{fontSize:10,padding:"4px 10px"}} onClick={()=>descargarCSV(h.data)}>⬇ Excel</button>
-                          {h.estado_tp==="ingresada" ? (
-                            <span className="hbadge" style={{background:"#dcfce7",color:"#166534",border:"1px solid #86efac"}}>✅ Ingresada</span>
-                          ) : h.estado_tp==="en_proceso" ? (
-                            <>
-                              <span className="hbadge" style={{background:"#dbeafe",color:"#1e40af",border:"1px solid #93c5fd"}}>⏳ En proceso</span>
-                              <button className="bsm bacc" style={{fontSize:10,padding:"4px 10px"}} onClick={()=>marcarIngresada(i)}>✅ Marcar ingresada</button>
-                            </>
+                          {h.estado_tp==="ingresada" ? null
+                          : h.estado_tp==="en_proceso" ? (
+                            <button className="bsm bacc" style={{fontSize:10,padding:"4px 10px"}} onClick={()=>marcarIngresada(i)}>✅ Marcar ingresada</button>
                           ) : (
                             <button className="bsm btp" style={{fontSize:10,padding:"4px 10px",opacity:h.data.productos?.some(p=>p._pendiente_mapeo)?0.4:1}} 
                               onClick={()=>{ if(!h.data.productos?.some(p=>p._pendiente_mapeo)) setTpModal(h.data); else alert("Primero mapea los productos sin EAN ⚠️"); }}>🤖 Auto</button>
