@@ -989,19 +989,25 @@ async function analizarConIA(texto, archivo, onLog, file=null, apiKey='') {
 // load y save definidas al inicio del archivo
 
 function detectarDup(texto) {
-  if (!texto) return null; // imágenes no pueden ser duplicadas por texto
+  if (!texto) return null;
   const procesados = load("as_procesados", {});
+  // Buscar cada número registrado dentro del texto del PDF
   for (const key of Object.keys(procesados)) {
-    const num = key.split("_").slice(1).join("_");
-    if (num && texto.includes(num)) return procesados[key];
+    const entry = procesados[key];
+    const num = entry.numero || key.split("_").slice(1).join("_");
+    if (num && num.length >= 3 && texto.includes(num)) return entry;
   }
   return null;
 }
 
 function registrarProcesado(f) {
   const todos = load("as_procesados", {});
-  const key = `${f.nit_proveedor}_${f.numero_factura}`;
-  todos[key] = { proveedor: f.proveedor, numero: f.numero_factura, fecha: f.fecha_emision, procesadoEl: f._procesadoEl };
+  const num = (f.numero_factura || "").toString().trim();
+  const nit = (f.nit_proveedor || "").toString().trim();
+  if (!num) return;
+  // Guardar por número solo Y por nit+numero para mayor cobertura
+  todos[`num_${num}`] = { proveedor: f.proveedor, numero: num, fecha: f.fecha_emision, procesadoEl: f._procesadoEl };
+  if (nit) todos[`${nit}_${num}`] = { proveedor: f.proveedor, numero: num, fecha: f.fecha_emision, procesadoEl: f._procesadoEl };
   save("as_procesados", todos);
 }
 
@@ -2049,7 +2055,7 @@ Proveedor: ${f.proveedor} | Factura: ${f.numero_factura} | ${lineas.length} prod
                     </span>
                   }
                 </div>
-                <div className="sec-sub">// Selecciona facturas para subir a TouchPay en lote</div>
+                <div className="sec-sub">// Selecciona con ☑ las facturas para subir a TouchPay en lote</div>
               </div>
               <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
                 {seleccionadas.size > 0 && (
@@ -2090,7 +2096,7 @@ Proveedor: ${f.proveedor} | Factura: ${f.numero_factura} | ${lineas.length} prod
                       <input type="checkbox" checked={seleccionadas.has(i)}
                         onClick={e=>e.stopPropagation()}
                         onChange={e=>{ const s=new Set(seleccionadas); e.target.checked?s.add(i):s.delete(i); setSeleccionadas(s); }}
-                        style={{marginRight:8,width:16,height:16,cursor:"pointer",accentColor:"var(--green)"}}
+                        style={{marginRight:8,width:16,height:16,cursor:"pointer",accentColor:"var(--green)",flexShrink:0}}
                       />
                     )}
                     <div style={{flex:1}}>
@@ -2145,15 +2151,15 @@ Proveedor: ${f.proveedor} | Factura: ${f.numero_factura} | ${lineas.length} prod
                           )}
                           <button className="bsm bout" style={{fontSize:10,padding:"4px 10px"}} onClick={()=>descargarCSV(h.data)}>⬇ Excel</button>
                           {h.estado_tp==="ingresada" ? (
-                            <span className="hbadge" style={{background:"#dcfce7",color:"#166534",border:"1px solid #86efac"}}>✅ Ingresada en TouchPay</span>
+                            <span className="hbadge" style={{background:"#dcfce7",color:"#166534",border:"1px solid #86efac"}}>✅ Ingresada</span>
                           ) : h.estado_tp==="en_proceso" ? (
-                            <span className="hbadge" style={{background:"#dbeafe",color:"#1e40af",border:"1px solid #93c5fd"}}>⏳ En proceso</span>
+                            <>
+                              <span className="hbadge" style={{background:"#dbeafe",color:"#1e40af",border:"1px solid #93c5fd"}}>⏳ En proceso</span>
+                              <button className="bsm bacc" style={{fontSize:10,padding:"4px 10px"}} onClick={()=>marcarIngresada(i)}>✅ Marcar ingresada</button>
+                            </>
                           ) : (
                             <button className="bsm btp" style={{fontSize:10,padding:"4px 10px",opacity:h.data.productos?.some(p=>p._pendiente_mapeo)?0.4:1}} 
                               onClick={()=>{ if(!h.data.productos?.some(p=>p._pendiente_mapeo)) setTpModal(h.data); else alert("Primero mapea los productos sin EAN ⚠️"); }}>🤖 Auto</button>
-                          )}
-                          {h.estado_tp==="en_proceso" && (
-                            <button className="bsm bacc" style={{fontSize:10,padding:"4px 10px"}} onClick={()=>marcarIngresada(i)}>✅ Marcar ingresada</button>
                           )}
                           <button className="bsm bdanger" style={{fontSize:10,padding:"4px 10px"}} onClick={()=>borrarUno(h.numero,h.data?.nit_proveedor)}>🗑</button>
                         </>
