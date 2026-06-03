@@ -1030,6 +1030,10 @@ function App() {
   const [tpModal, setTpModal] = useState(null); // factura activa en modal TouchPay
   const [mapeoModal, setMapeoModal] = useState(null); // {histIdx, productos sin mapear}
   const [mapeoEans, setMapeoEans] = useState({}); // {descripcion: ean ingresado}
+  const [seleccionadas, setSeleccionadas] = useState(new Set()); // indices seleccionados para script múltiple
+  const [multiModal, setMultiModal] = useState(false); // modal script múltiple
+  const [pollingActivo, setPollingActivo] = useState(false);
+  const pollingRef = React.useRef(null);
   const logRef = useRef();
 
   const addLog = useCallback((msg, type = "def") => {
@@ -1373,7 +1377,8 @@ function App() {
           numero: resultado.numero_factura, fecha: resultado.fecha_emision,
           total: resultado.total_factura, productos: resultado.productos?.length,
           procesadoEl: resultado._procesadoEl, data: resultado,
-          alertas_precio: alertas_precio.length > 0 ? alertas_precio : null
+          alertas_precio: alertas_precio.length > 0 ? alertas_precio : null,
+          estado_tp: resultado.productos?.some(p=>p._pendiente_mapeo) ? "sin_mapear" : "pendiente"
         });
         save("as_historial", hist.slice(0, 200));
         setHistorial(hist.slice(0, 200));
@@ -1415,6 +1420,78 @@ function App() {
   };
 
   const [confirmBorrar, setConfirmBorrar] = useState(false);
+  const generarScriptMultiple = () => {
+    const facturas = [...seleccionadas].map(i => historial[i]).filter(h => h.tipo==="ok" && h.data);
+    if (!facturas.length) return;
+    const scripts = facturas.map((h, idx) => {
+      const { script } = generarScriptTP(h.data, cantidadesReales, correcciones);
+      const sep = "━".repeat(50);
+      return sep + "\n📦 FACTURA " + (idx+1) + " de " + facturas.length + ": " + h.proveedor + " — #" + h.numero + "\n" + sep + "\n" + script;
+    });
+    const intro = "Debes ingresar " + facturas.length + " factura" + (facturas.length>1?"s":"") + " en TouchPay una por una, en orden. Cuando termines cada una completamente (incluyendo el paso final de confirmación), empieza la siguiente sin preguntar.";
+    const scriptFinal = intro + "\n\n" + scripts.join("\n\n");
+    navigator.clipboard.writeText(scriptFinal).then(() => {
+      setMultiModal(false);
+      // Marcar como "en proceso"
+      const hist = [...historial];
+      seleccionadas.forEach(i => { if(hist[i]) hist[i] = {...hist[i], estado_tp: "en_proceso"}; });
+      save("as_historial", hist);
+      setHistorial(hist);
+      setSeleccionadas(new Set());
+      window.open('https://touchpay.market/?#/notas', '_blank');
+      addLog(`✓ Script de ${facturas.length} facturas copiado — abre Claude in Chrome y pega`, "lok");
+    });
+  };
+
+  const marcarIngresada = (idx) => {
+    const hist = [...historial];
+    hist[idx] = {...hist[idx], estado_tp: "ingresada"};
+    save("as_historial", hist);
+    setHistorial(hist);
+  };
+
+  const iniciarPolling = () => {
+    if (pollingRef.current) clearInterval(pollingRef.current);
+    setPollingActivo(true);
+    addLog("🔄 Polling automático activado — revisando Gmail cada 2 horas", "lok");
+    // Solicitar permiso de notificaciones
+    if ("Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+    pollingRef.current = setInterval(async () => {
+      if (!window._gmailToken) return;
+      addLog("🔄 Revisión automática de Gmail...", "linf");
+      try {
+        const desdeDate = new Date(gmailDesde + "T00:00:00");
+        const despues = Math.floor(desdeDate.getTime() / 1000);
+        const query = "has:attachment (filename:zip OR filename:ZIP OR filename:.zip) after:" + despues;
+        const res = await fetch(
+          "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=" + encodeURIComponent(query) + "&maxResults=50&format=metadata&metadataHeaders=From",
+          { headers: { Authorization: "Bearer " + window._gmailToken } }
+        );
+        const data = await res.json();
+        if (data.error) { addLog("⚠ Polling: token expirado — reconecta Gmail", "lwrn"); return; }
+        const msgs = (data.messages || []).map(m => {
+          const fromHeader = m.payload?.headers?.find(h => h.name === "From")?.value || "";
+          const fromName = fromHeader.replace(/<[^>]+>/g,"").replace(/"/g,"").trim() || "Proveedor desconocido";
+          return { ...m, remitente: fromName };
+        });
+        if (msgs.length > 0) {
+          setGmailCorreos(msgs);
+          addLog(`→ ${msgs.length} correos encontrados en revisión automática`, "lok");
+        } else {
+          addLog("→ Sin correos nuevos", "linf");
+        }
+      } catch(e) { addLog("⚠ Error en polling: " + e.message, "lwrn"); }
+    }, 2 * 60 * 60 * 1000); // 2 horas
+  };
+
+  const detenerPolling = () => {
+    if (pollingRef.current) clearInterval(pollingRef.current);
+    setPollingActivo(false);
+    addLog("⏹ Polling automático detenido", "linf");
+  };
+
   const guardarMapeoYReprocesar = () => {
     const { histIdx } = mapeoModal;
     const hist = [...historial];
@@ -1902,6 +1979,10 @@ Proveedor: ${f.proveedor} | Factura: ${f.numero_factura} | ${lineas.length} prod
                     <button className="bsm bacc" onClick={buscarCorreosGmail} disabled={gmailLoading}>
                       {gmailLoading ? <><span className="spin"/>Buscando...</> : "🔍 Buscar"}
                     </button>
+                    <button className="bsm" style={{background:pollingActivo?"#dcfce7":"var(--bg2)",color:pollingActivo?"#166534":"var(--text)",border:`1.5px solid ${pollingActivo?"#86efac":"var(--border)"}`}}
+                      onClick={pollingActivo?detenerPolling:iniciarPolling}>
+                      {pollingActivo?"⏹ Auto ON":"🔄 Auto"}
+                    </button>
                     {gmailCorreos.length > 0 && (
                       <button className="bsm bacc" style={{background:"#1a7f4b"}} onClick={procesarDesdeGmail} disabled={gmailProcesando}>
                         {gmailProcesando ? <><span className="spin"/>Descargando...</> : `⬇ Descargar ${gmailCorreos.length} facturas`}
@@ -1959,12 +2040,31 @@ Proveedor: ${f.proveedor} | Factura: ${f.numero_factura} | ${lineas.length} prod
 
           {/* TAB HISTORIAL */}
           {tab==="historial"&&<>
-            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:20}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:20,flexWrap:"wrap",gap:8}}>
               <div>
-                <div className="sec-title">Historial</div>
-                <div className="sec-sub">// Todas las facturas procesadas en esta sesión</div>
+                <div className="sec-title">Historial
+                  {historial.filter(h=>h.estado_tp==="pendiente").length > 0 &&
+                    <span style={{marginLeft:8,fontSize:12,fontWeight:700,background:"#f59e0b",color:"#fff",borderRadius:20,padding:"2px 10px"}}>
+                      {historial.filter(h=>h.estado_tp==="pendiente").length} pendientes
+                    </span>
+                  }
+                </div>
+                <div className="sec-sub">// Selecciona facturas para subir a TouchPay en lote</div>
               </div>
-              {historial.length>0&&<button className={`btn-sm-outline${confirmBorrar?" bdanger":""}`} onClick={borrarHistorial}>{confirmBorrar?"⚠ Confirmar — clic de nuevo para borrar":"🗑 Borrar todo y reiniciar"}</button>}
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                {seleccionadas.size > 0 && (
+                  <button className="btn-main" style={{fontSize:12,padding:"7px 16px"}}
+                    onClick={()=>setMultiModal(true)}>
+                    🚀 Subir {seleccionadas.size} factura{seleccionadas.size>1?"s":""} a TouchPay
+                  </button>
+                )}
+                {seleccionadas.size > 0 && (
+                  <button className="bsm bout" style={{fontSize:11}} onClick={()=>setSeleccionadas(new Set())}>
+                    ✕ Deseleccionar
+                  </button>
+                )}
+                {historial.length>0&&<button className={`btn-sm-outline${confirmBorrar?" bdanger":""}`} onClick={borrarHistorial}>{confirmBorrar?"⚠ Confirmar":"🗑 Borrar todo"}</button>}
+              </div>
             </div>
 
             {historial.length>0&&(
@@ -1982,10 +2082,17 @@ Proveedor: ${f.proveedor} | Factura: ${f.numero_factura} | ${lineas.length} prod
               </div>
             ):(
               historial.map((h,i)=>(
-                <div key={i} style={{marginBottom:8, border:"1.5px solid var(--border)", borderRadius:12, overflow:"hidden", background:"var(--surface)"}}>
+                <div key={i} style={{marginBottom:8, border:`1.5px solid ${h.estado_tp==="ingresada"?"#c8e6d0":h.estado_tp==="en_proceso"?"#bfdbfe":"var(--border)"}`, borderRadius:12, overflow:"hidden", background:h.estado_tp==="ingresada"?"#f0fdf4":h.estado_tp==="en_proceso"?"#eff6ff":"var(--surface)", opacity:h.estado_tp==="ingresada"?0.7:1}}>
                   {/* Header clickeable */}
                   <div className="hist-item" style={{cursor: h.tipo==="ok"?"pointer":"default", borderBottom: histExpanded===i?"1.5px solid var(--border)":"none"}}
                     onClick={()=>h.tipo==="ok" && setHistExpanded(histExpanded===i?null:i)}>
+                    {h.tipo==="ok" && h.estado_tp !== "ingresada" && !h.data?.productos?.some(p=>p._pendiente_mapeo) && (
+                      <input type="checkbox" checked={seleccionadas.has(i)}
+                        onClick={e=>e.stopPropagation()}
+                        onChange={e=>{ const s=new Set(seleccionadas); e.target.checked?s.add(i):s.delete(i); setSeleccionadas(s); }}
+                        style={{marginRight:8,width:16,height:16,cursor:"pointer",accentColor:"var(--green)"}}
+                      />
+                    )}
                     <div style={{flex:1}}>
                       <div className="hist-prov" style={{display:"flex",alignItems:"center",gap:6}}>
                         {h.tipo==="ok"&&<span style={{fontSize:11,color:"var(--muted)"}}>{histExpanded===i?"▼":"▶"}</span>}
@@ -2037,8 +2144,17 @@ Proveedor: ${f.proveedor} | Factura: ${f.numero_factura} | ${lineas.length} prod
                             </span>
                           )}
                           <button className="bsm bout" style={{fontSize:10,padding:"4px 10px"}} onClick={()=>descargarCSV(h.data)}>⬇ Excel</button>
-                          <button className="bsm btp" style={{fontSize:10,padding:"4px 10px",opacity:h.data.productos?.some(p=>p._pendiente_mapeo)?0.4:1}} 
-                            onClick={()=>{ if(!h.data.productos?.some(p=>p._pendiente_mapeo)) setTpModal(h.data); else alert("Primero mapea los productos sin EAN ⚠️"); }}>🤖 Auto</button>
+                          {h.estado_tp==="ingresada" ? (
+                            <span className="hbadge" style={{background:"#dcfce7",color:"#166534",border:"1px solid #86efac"}}>✅ Ingresada en TouchPay</span>
+                          ) : h.estado_tp==="en_proceso" ? (
+                            <span className="hbadge" style={{background:"#dbeafe",color:"#1e40af",border:"1px solid #93c5fd"}}>⏳ En proceso</span>
+                          ) : (
+                            <button className="bsm btp" style={{fontSize:10,padding:"4px 10px",opacity:h.data.productos?.some(p=>p._pendiente_mapeo)?0.4:1}} 
+                              onClick={()=>{ if(!h.data.productos?.some(p=>p._pendiente_mapeo)) setTpModal(h.data); else alert("Primero mapea los productos sin EAN ⚠️"); }}>🤖 Auto</button>
+                          )}
+                          {h.estado_tp==="en_proceso" && (
+                            <button className="bsm bacc" style={{fontSize:10,padding:"4px 10px"}} onClick={()=>marcarIngresada(i)}>✅ Marcar ingresada</button>
+                          )}
                           <button className="bsm bdanger" style={{fontSize:10,padding:"4px 10px"}} onClick={()=>borrarUno(h.numero,h.data?.nit_proveedor)}>🗑</button>
                         </>
                       )}
@@ -2104,6 +2220,38 @@ Proveedor: ${f.proveedor} | Factura: ${f.numero_factura} | ${lineas.length} prod
           </>}
         </div>
       </div>
+
+      {/* MODAL SCRIPT MÚLTIPLE */}
+      {multiModal && (
+        <div className="tp-modal" onClick={e=>{ if(e.target.className==="tp-modal") setMultiModal(false); }}>
+          <div className="tp-modal-box" style={{maxWidth:520}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
+              <div>
+                <div className="tp-modal-title">🚀 Subir {seleccionadas.size} facturas a TouchPay</div>
+                <div style={{fontFamily:"DM Mono,monospace",fontSize:11,color:"var(--muted)"}}>Se generará un script único — el bot las ingresa una por una</div>
+              </div>
+              <button className="bsm bout" onClick={()=>setMultiModal(false)}>✕</button>
+            </div>
+            <div style={{marginBottom:16}}>
+              {[...seleccionadas].map(i=>historial[i]).filter(Boolean).map((h,idx)=>(
+                <div key={idx} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 12px",marginBottom:6,borderRadius:8,background:"var(--bg2)",border:"1px solid var(--border)"}}>
+                  <span style={{fontFamily:"DM Mono,monospace",fontSize:11,color:"var(--muted)",minWidth:20}}>{idx+1}.</span>
+                  <div style={{flex:1}}>
+                    <div style={{fontFamily:"Nunito,sans-serif",fontWeight:700,fontSize:13}}>{h.proveedor}</div>
+                    <div style={{fontFamily:"DM Mono,monospace",fontSize:11,color:"var(--muted)"}}>Factura {h.numero} · {h.productos} productos · {fCOP(h.total)}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <button className="btn-main" style={{width:"100%",padding:"12px",fontSize:14}} onClick={generarScriptMultiple}>
+              📋 Copiar script y abrir TouchPay
+            </button>
+            <div style={{marginTop:10,fontFamily:"DM Mono,monospace",fontSize:11,color:"var(--muted)",textAlign:"center"}}>
+              Después de pegar en Claude in Chrome, marca cada factura como ✅ Ingresada
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MODAL MAPEO PRODUCTOS */}
       {mapeoModal && (
