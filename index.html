@@ -45,6 +45,52 @@ const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } cat
 const { useState, useRef, useCallback } = React;
 const API_KEY = load("as_api_key", "");
 const INVENTARIO = "Stock Central 15";
+const SHEET_ID = "19U20eApE4GqhMLqd_kuLjT6kxhWuOAHICdR1sExdeVk";
+
+// Sheets helpers
+const sheetsGet = async (token, range) => {
+  const r = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}`, {
+    headers: { Authorization: "Bearer " + token }
+  });
+  return r.json();
+};
+const sheetsSet = async (token, range, values) => {
+  await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}?valueInputOption=RAW`, {
+    method: "PUT", headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+    body: JSON.stringify({ values })
+  });
+};
+const sheetsAppend = async (token, range, values) => {
+  await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`, {
+    method: "POST", headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+    body: JSON.stringify({ values })
+  });
+};
+const sheetsClear = async (token, range) => {
+  await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}:clear`, {
+    method: "POST", headers: { Authorization: "Bearer " + token }
+  });
+};
+const sheetsEnsureSheets = async (token) => {
+  const r = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}`, {
+    headers: { Authorization: "Bearer " + token }
+  });
+  const data = await r.json();
+  const existentes = (data.sheets || []).map(s => s.properties.title);
+  const necesarias = ["Config", "Historial", "Costos", "Maestro_Nuevos"];
+  const faltantes = necesarias.filter(n => !existentes.includes(n));
+  if (faltantes.length > 0) {
+    await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}:batchUpdate`, {
+      method: "POST", headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+      body: JSON.stringify({ requests: faltantes.map(title => ({ addSheet: { properties: { title } } })) })
+    });
+    // Headers
+    if (faltantes.includes("Config")) await sheetsSet(token, "Config!A1:B1", [["clave","valor"]]);
+    if (faltantes.includes("Historial")) await sheetsSet(token, "Historial!A1:I1", [["fecha","proveedor","numero","total","productos","archivo","estado","error","alertas"]]);
+    if (faltantes.includes("Costos")) await sheetsSet(token, "Costos!A1:B1", [["ean","costo"]]);
+    if (faltantes.includes("Maestro_Nuevos")) await sheetsSet(token, "Maestro_Nuevos!A1:G1", [["proveedor","desc_factura","aliases","cod_barras","planograma","unidad_conv","cant_conv"]]);
+  }
+};
 const MAX_INTENTOS = 3;
 
 const S = `
@@ -1005,7 +1051,7 @@ function App() {
   const obtenerTokenFresco = (silencioso = false) => new Promise((resolve, reject) => {
     const client = window.google.accounts.oauth2.initTokenClient({
       client_id: "643298291395-ksk4egt0liaeemg3chop4lejpb8850pm.apps.googleusercontent.com",
-      scope: "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.labels https://www.googleapis.com/auth/gmail.modify",
+      scope: "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.labels https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/spreadsheets",
       prompt: silencioso ? "none" : "",
       callback: (resp) => {
         if (resp.error) reject(resp.error);
@@ -1173,6 +1219,15 @@ function App() {
     setUltimoProcesamiento(ahora);
     setGmailDesde(new Date(ahora).toISOString().slice(0,10));
     addLog(`✓ Próxima vez solo buscará correos nuevos desde ahora`, "lok");
+    // Sincronizar fecha a Sheets Config
+    if (window._gmailToken) {
+      sheetsGet(window._gmailToken, "Config!A2:B").then(data => {
+        const rows = data.values || [];
+        const idx = rows.findIndex(r => r[0] === "as_ultimo_gmail");
+        if (idx >= 0) sheetsSet(window._gmailToken, `Config!A${idx+2}:B${idx+2}`, [["as_ultimo_gmail", ahora]]).catch(()=>{});
+        else sheetsAppend(window._gmailToken, "Config!A:B", [["as_ultimo_gmail", ahora]]).catch(()=>{});
+      }).catch(()=>{});
+    }
     setGmailProcesando(false);
   };
 
@@ -1241,16 +1296,47 @@ function App() {
         const np = load("as_pendientes", []).filter(p => p.nombre !== file.name);
         save("as_pendientes", np); setPendientes(np);
 
+        // Comparar costos con histórico y detectar alzas > 3%
+        const costos_guardados = load("as_costos_productos", {});
+        const alertas_precio = [];
+        (resultado.productos || []).filter(p => p.cod_barras_touchpay && !p._pendiente_mapeo).forEach(p => {
+          const ean = p.cod_barras_touchpay;
+          const costo_nuevo = Math.round(p.valor_unitario_costo);
+          const costo_anterior = costos_guardados[ean];
+          if (costo_anterior && costo_nuevo > costo_anterior) {
+            const variacion = ((costo_nuevo - costo_anterior) / costo_anterior) * 100;
+            if (variacion > 3) {
+              alertas_precio.push({
+                ean, nombre: p.planograma_touchpay || p.nombre_normalizado || p.descripcion,
+                costo_anterior, costo_nuevo,
+                variacion: Math.round(variacion * 10) / 10
+              });
+            }
+          }
+          // Guardar/actualizar costo actual
+          costos_guardados[ean] = costo_nuevo;
+        });
+        save("as_costos_productos", costos_guardados);
+        // Sincronizar costos a Sheets (async, no bloqueante)
+        if (window._gmailToken) {
+          const costosRows = [["ean","costo"], ...Object.entries(costos_guardados).map(([k,v])=>[k,v])];
+          sheetsClear(window._gmailToken, "Costos!A1:B").then(() => sheetsSet(window._gmailToken, "Costos!A1:B", costosRows)).catch(()=>{});
+        }
+
         // Guardar en historial
         const hist = load("as_historial", []);
         hist.unshift({
           tipo: "ok", archivo: file.name, proveedor: resultado.proveedor,
           numero: resultado.numero_factura, fecha: resultado.fecha_emision,
           total: resultado.total_factura, productos: resultado.productos?.length,
-          procesadoEl: resultado._procesadoEl, data: resultado
+          procesadoEl: resultado._procesadoEl, data: resultado,
+          alertas_precio: alertas_precio.length > 0 ? alertas_precio : null
         });
         save("as_historial", hist.slice(0, 200));
         setHistorial(hist.slice(0, 200));
+        if (alertas_precio.length > 0) {
+          addLog(`📈 ${alertas_precio.length} producto(s) con aumento de costo >3% — revisar precios de venta`, "lwrn");
+        }
 
         nuevos.push(resultado);
         addLog(`✓ Listo: ${file.name}`, "lok");
@@ -1298,7 +1384,7 @@ function App() {
       // Guardar en maestro permanentemente
       const maestroActual = [...MAESTRO_PRODUCTOS];
       if (!maestroActual.find(m => m.cod_barras === ean)) {
-        MAESTRO_PRODUCTOS.push({
+        const nuevoProducto = {
           proveedor: entrada.data.proveedor || "OTRO",
           desc_factura: p.descripcion,
           aliases: [p.descripcion, p.nombre_normalizado || p.descripcion],
@@ -1306,7 +1392,16 @@ function App() {
           planograma: p.nombre_normalizado || p.descripcion,
           unidad_conv: "Unidad",
           cant_conv: 1
-        });
+        };
+        MAESTRO_PRODUCTOS.push(nuevoProducto);
+        // Guardar en Sheets Maestro_Nuevos
+        if (window._gmailToken) {
+          sheetsAppend(window._gmailToken, "Maestro_Nuevos!A:G", [[
+            nuevoProducto.proveedor, nuevoProducto.desc_factura,
+            nuevoProducto.aliases.join("|"), nuevoProducto.cod_barras,
+            nuevoProducto.planograma, nuevoProducto.unidad_conv, nuevoProducto.cant_conv
+          ]]).catch(()=>{});
+        }
       }
       return { ...p, cod_barras_touchpay: ean, planograma_touchpay: p.nombre_normalizado || p.descripcion, _mapeado: true, _pendiente_mapeo: false };
     });
@@ -1863,6 +1958,33 @@ Proveedor: ${f.proveedor} | Factura: ${f.numero_factura} | ${lineas.length} prod
                       {h.tipo==="ok"&&<span className="hbadge hbok">✓ Procesada</span>}
                       {h.tipo==="duplicado"&&<span className="hbadge hbdup">⚠ Duplicada</span>}
                       {h.tipo==="error"&&<span className="hbadge hberr">✗ Error</span>}
+                      {h.tipo==="ok"&&h.alertas_precio?.length>0&&(
+                        <div style={{margin:"8px 0 4px",padding:"12px 16px",background:"#fffbeb",border:"1.5px solid #f59e0b",borderRadius:10}}>
+                          <div style={{fontFamily:"Nunito,sans-serif",fontWeight:800,fontSize:13,color:"#b45309",marginBottom:8}}>
+                            📈 {h.alertas_precio.length} producto{h.alertas_precio.length>1?"s":""} con aumento de costo &gt;3% — revisar precios de venta
+                          </div>
+                          <table style={{width:"100%",borderCollapse:"collapse",fontFamily:"DM Mono,monospace",fontSize:11}}>
+                            <thead>
+                              <tr style={{color:"var(--muted)",borderBottom:"1px solid #f59e0b"}}>
+                                <td style={{padding:"3px 8px 6px 0",fontWeight:700}}>Producto</td>
+                                <td style={{padding:"3px 8px 6px",textAlign:"right",fontWeight:700}}>Costo anterior</td>
+                                <td style={{padding:"3px 8px 6px",textAlign:"right",fontWeight:700}}>Costo nuevo</td>
+                                <td style={{padding:"3px 0 6px",textAlign:"right",fontWeight:700}}>Variación</td>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {h.alertas_precio.map((a,ai)=>(
+                                <tr key={ai} style={{borderBottom:"1px solid #fde68a"}}>
+                                  <td style={{padding:"5px 8px 5px 0",color:"var(--text)",fontWeight:600}}>{a.nombre}</td>
+                                  <td style={{padding:"5px 8px",textAlign:"right",color:"var(--muted)"}}>${a.costo_anterior.toLocaleString("es-CO")}</td>
+                                  <td style={{padding:"5px 8px",textAlign:"right",color:"var(--text)",fontWeight:700}}>${a.costo_nuevo.toLocaleString("es-CO")}</td>
+                                  <td style={{padding:"5px 0",textAlign:"right",color: a.variacion>10?"#dc2626":"#d97706",fontWeight:800}}>+{a.variacion}% {a.variacion>10?"🔴":"🟡"}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
                       {h.tipo==="ok"&&h.data&&(
                         <>
                           {h.data.productos?.some(p=>p._pendiente_mapeo) && (
