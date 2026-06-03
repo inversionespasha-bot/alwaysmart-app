@@ -1063,10 +1063,12 @@ function App() {
 
   const conectarGmail = async () => {
     setGmailLoading(true);
+    setGmailProcesando(false); // Reset por si quedó colgado
     try {
       const token = await obtenerTokenFresco(false);
       setGmailToken(token);
       save("as_gmail_token", token);
+      window._gmailToken = token;
       addLog("✓ Gmail conectado", "lok");
     } catch(e) {
       addLog("✗ Error conectando Gmail: " + e, "lerr");
@@ -1080,6 +1082,8 @@ function App() {
     setGmailLoading(true);
     setGmailCorreos([]);
     setGmailPdfs([]);
+    setGmailProcesando(false); // Reset por si quedó colgado
+    window._gmailToken = gmailToken;
     const ejecutarBusqueda = async (token) => {
       const desdeDate = new Date(gmailDesde + "T00:00:00");
       const despues = Math.floor(desdeDate.getTime() / 1000);
@@ -1099,6 +1103,7 @@ function App() {
         const nuevoToken = await obtenerTokenFresco(true);
         setGmailToken(nuevoToken);
         save("as_gmail_token", nuevoToken);
+        window._gmailToken = nuevoToken;
         data = await ejecutarBusqueda(nuevoToken);
       }
       if (data.error) { addLog("✗ Error Gmail: " + data.error.message, "lerr"); setGmailLoading(false); return; }
@@ -1128,6 +1133,7 @@ function App() {
       tokenActivo = await obtenerTokenFresco(true);
       setGmailToken(tokenActivo);
       save("as_gmail_token", tokenActivo);
+      window._gmailToken = tokenActivo;
     } catch(e) { /* usar token actual si falla refresh silencioso */ }
     addLog(`📧 Descargando facturas de ${gmailCorreos.length} correos...`, "linf");
     const archivos = [];
