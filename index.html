@@ -1070,6 +1070,29 @@ function App() {
       save("as_gmail_token", token);
       window._gmailToken = token;
       addLog("✓ Gmail conectado", "lok");
+      // Inicializar y sincronizar Google Sheets
+      try {
+        await sheetsEnsureSheets(token);
+        const costoData = await sheetsGet(token, "Costos!A2:B");
+        if (costoData.values?.length > 0) {
+          const costos = {};
+          costoData.values.forEach(([ean,costo]) => { if(ean) costos[ean] = Number(costo); });
+          save("as_costos_productos", costos);
+          addLog(`✓ ${Object.keys(costos).length} costos cargados desde Sheets`, "lok");
+        }
+        const configData = await sheetsGet(token, "Config!A2:B");
+        if (configData.values?.length > 0) {
+          const ultimoRow = configData.values.find(r => r[0] === "as_ultimo_gmail");
+          if (ultimoRow?.[1]) {
+            save("as_ultimo_gmail", ultimoRow[1]);
+            setUltimoProcesamiento(ultimoRow[1]);
+            setGmailDesde(new Date(ultimoRow[1]).toISOString().slice(0,10));
+          }
+        }
+        addLog("✓ Datos sincronizados desde Google Sheets", "lok");
+      } catch(e) {
+        addLog("⚠ Sheets no disponible — usando datos locales", "lwrn");
+      }
     } catch(e) {
       addLog("✗ Error conectando Gmail: " + e, "lerr");
     }
