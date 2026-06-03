@@ -1147,7 +1147,18 @@ function App() {
             if (p.parts) buscarAdjuntos(p.parts);
           }
         };
-        buscarAdjuntos(msgData.payload?.parts);
+        // Guardar remitente junto con cada adjunto para usarlo después
+        const remitente = msg.remitente || null;
+        const buscarAdjuntosFixed = (partes) => {
+          if (!partes) return;
+          for (const p of partes) {
+            if (p.filename && p.filename.toLowerCase().endsWith('.zip') && p.body?.attachmentId) {
+              archivos.push({ nombre: p.filename, attId: p.body.attachmentId, msgId: msg.id, remitente });
+            }
+            if (p.parts) buscarAdjuntosFixed(p.parts);
+          }
+        };
+        buscarAdjuntosFixed(msgData.payload?.parts);
       } catch(e) { addLog("✗ Error leyendo correo: " + e.message, "lerr"); }
     }
     addLog(`→ ${archivos.length} archivos ZIP encontrados`, "lok");
@@ -1166,7 +1177,7 @@ function App() {
           if (nombre.toLowerCase().endsWith('.pdf')) {
             const pdfBytes = await archivo.async('arraybuffer');
             const pdfFile = new File([pdfBytes], nombre, { type: 'application/pdf' });
-            pdfFile._remitente = msg.remitente || null;
+            pdfFile._remitente = adj.remitente || null;
             pdfs.push(pdfFile);
             addLog(`→ PDF extraído: ${nombre}`, "lok");
           }
