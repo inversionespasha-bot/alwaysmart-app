@@ -395,6 +395,17 @@ PROVEEDOR COCA-COLA FEMSA (NIT 890903858) — reglas especiales:
     * "004 COCA-COLA 400ML" sin asterisco, venta=44935, IBUA=6528, cant=2 → (44935*1.19 + 6528)/2 = (53473 + 6528)/2 = 60001/2 = 30000
     * "* 005 SCHWEPPES" con asterisco, venta=25100, IBUA=0, cant=1 → (25100 + 0)/1 = 25100
 
+PROVEEDOR BIMBO DE COLOMBIA S.A. (NIT 830002366):
+  - Formato: cada producto en una línea con "cant UND X $precio = $total", seguido opcionalmente de "IVA 19 $valor" e "ICIU 20% $valor"
+  - Si la línea del producto NO tiene "IVA 19" debajo → sin IVA → valor_unitario_costo = precio exacto de la factura
+  - Si la línea del producto SÍ tiene "IVA 19" debajo → valor_unitario_costo = precio × 1.19
+  - Si además tiene "ICIU 20%" → sumar también ese valor dividido por cantidad
+  - cantidad_por_conversion = 1 siempre (UND)
+  - Ejemplos verificados:
+    * "6.00 UND X $7,751.00 = $46,506.00" SIN línea IVA → valor=7751 (sin IVA)
+    * "5.00 UND X $5,603.00 = $28,015.00" CON "IVA 19 5,322.85" → valor=5603×1.19=6667
+    * "3.00 UND X $1,079.00 = $3,237.00" CON "IVA 19 615.03" Y "ICIU 20% 647.40" → valor=(1079×1.19)+(647.40/3)=1284+216=1500
+
 PROVEEDOR FRITOLAY / COMERCIALIZADORA NACIONAL SAS LTDA (NIT 830040709) — Pepsico:
   - Columnas: MATERIAL, DESCRIPCIÓN, CANT, UNIDAD, UN/CAJA, V. UNITARIO, DESCUENTO, IVA, VALOR NETO
   - La columna UNIDAD dice "C/U" (cada unidad) → cantidad_por_conversion = 1 siempre
@@ -452,7 +463,8 @@ PROVEEDOR MEGA MAYORISTA / DIEGO EDILSON RAMÍREZ SALAZAR (NIT 1047391923):
   - La columna U.M define la conversión: P6=6, P12=12, P15=15, P24=24, UND=1
   - El asterisco * al final del total es solo informativo, NO afecta el cálculo
   - IGNORAR siempre la línea "DESPACHO PRODUCTOS" — es flete, no es un producto
-  - Ejemplos: "TE HATSU P6 $23.100" → valor=23100, conv=6 | "SODA BRETAÑA P12 $38.800" → valor=38800, conv=12
+  - IMPORTANTE: valor_unitario_costo = V/r Uni ÷ conversión (NO es el precio por unidad individual)
+  - Ejemplos: "TE HATSU P6 $23.100" → valor=23100÷6=3850, conv=6 | "SODA BRETAÑA P12 $38.800" → valor=38800÷12=3233, conv=12 | "AGUA H2O LIMA LIMON P15 $30.400" → valor=30400÷15=2027, conv=15 | "GASEOSA P12 $38.800" → valor=38800÷12=3233, conv=12 | "COCTEL LOS CUATES UND $5.550" → valor=5550, conv=1
 
 PROVEEDOR INSIFOOD / ABASTECIMIENTO GASTRONÓMICO SAS (NIT 901850389):
   - Columnas: Cod Product, Descripción, Cant, UND, Precio UND sin IVA, % IVA, Precio UND con IVA, % Des, Precio Neto UND con IVA, Valor Total con IVA
