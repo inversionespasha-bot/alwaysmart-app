@@ -456,19 +456,21 @@ PROVEEDOR MEGA MAYORISTA / DIEGO EDILSON RAMÍREZ SALAZAR (NIT 1047391923):
 
 PROVEEDOR INSIFOOD / ABASTECIMIENTO GASTRONÓMICO SAS (NIT 901850389):
   - Columnas: Cod Product, Descripción, Cant, UND, Precio UND sin IVA, % IVA, Precio UND con IVA, % Des, Precio Neto UND con IVA, Valor Total con IVA
-  - valor_unitario_costo = columna "Precio UND con IVA" (ya incluye IVA)
-  - Sin descuentos (% Des = 0)
-  - REGLA DE CONVERSIÓN — buscar número de unidades en el nombre para TODOS los casos (UN o CJ):
-    * Buscar patrones al final o en medio del nombre: "X20U"=20, "X20UN"=20, "X12UN"=12, "X 4U"=4, "X4U"=4, "6UN"=6
-    * Si NO encuentra ningún patrón → conv=1
-    * EXCEPCIÓN EXPLÍCITA: "ALPINITO MORA 45G 4UN" → conv=1 (las 4 unidades son el pack de venta)
-    * Ejemplos:
-      - "AVENA ORIG VASO 250GR" → sin patrón → conv=1
-      - "ALPINITO MORA 45G 4UN" → excepción → conv=1
-      - "CHOCOLATINA LYNE LECHE 24PLEG 6UN 25GR" → tiene "6UN" → conv=6
-      - "BONYURT ZUCARITAS ALPINA 170GR PLEG X 4U" → tiene "X 4U" → conv=4
-      - "GALLETA CON HELADO NI NAPOLITAN 65G X20U" → tiene "X20U" → conv=20
-      - "CONO BOCATTO JUMBO NI 93GR X12UN" → tiene "X12UN" → conv=12
+  - CRITICO: "Precio UND con IVA" es el precio de la CAJA/PACK completo, NO de la unidad individual
+  - valor_unitario_costo = (Precio UND con IVA) DIVIDIDO ENTRE cantidad_por_conversion
+  - REGLA DE CONVERSION buscar patron de unidades en el nombre:
+    * "X24UN"=24, "X20U"=20, "X20UN"=20, "X12UN"=12, "X 4U"=4, "X4U"=4, "6UN"=6, "X30UN"=30, "X14UN"=14
+    * Sin patron conv=1 valor = Precio UND con IVA directamente
+    * EXCEPCION: "BONYURT ZUCARITAS ALPINA 170GR PLEG X 4U" conv=1
+  - Ejemplos verificados:
+    * "CONO CHOCOCONO 90GR X 24UN" PrecioConIVA=67744 conv=24, valor=67744/24=2822
+    * "PALETA POLET FRUTOS 70GR X 12UN" PrecioConIVA=58848 conv=12, valor=58848/12=4904
+    * "VASO ALOHA KOLA NI 160GR X 12UN" PrecioConIVA=43740 conv=12, valor=43740/12=3645
+    * "GALLETA CON HELADO NI NAPOLITAN 65G X20U" PrecioConIVA=56406 conv=20, valor=56406/20=2820
+    * "PALETA CHOCOLISTO CHOCOLATE 50GR X 30UN" PrecioConIVA=60797 conv=30, valor=60797/30=2027
+    * "AVENA ORIG VASO 250GR ALPINA" sin patron conv=1, valor=3162
+    * "CONO BOCATTO JUMBO NI 93 GR X 12UN" PrecioConIVA=53564 conv=12, valor=53564/12=4464
+    * "CHOCOLATINA LYNE LECHE 24PLEG 6UN 25GR" tiene "6UN" conv=6, valor=22687/6=3781
 
 PROVEEDOR FÁBRICA DE HELADOS LA FRESITA S.A.S (NIT 800066000):
   - Columnas: No, Código, Descripción, UM, Cant, UND, Precio Unit, % Dcto, IVA, Subtotal
