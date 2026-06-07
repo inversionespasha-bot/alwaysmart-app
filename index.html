@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ALWAYSMART · Asistente de Compras</title>
+<title>ALWAYSMART - PASHA · Asistente de Compras</title>
 <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
@@ -384,18 +384,20 @@ REGLAS PARA PRODUCTOS:
 REGLA PARA valor_unitario_costo — depende del proveedor:
 
 PROVEEDOR COCA-COLA FEMSA (NIT 890903858) — reglas especiales:
-  Esta factura tiene columnas: POSICIÓN, DESCRIPCIÓN, CANTIDAD, UNIDAD, CANT POR UNIDADES, VALOR UNITARIO, VALOR DE VENTA, VALOR IBUA Y OTROS
-  - cantidad_por_conversion = columna "CANT POR UNIDADES" (ejemplo: CJ de 12 → conv=12)
-  - FORMULA: valor_unitario_costo = TOTAL_LINEA / (CANTIDAD * CANT_POR_UNIDADES)
-    donde TOTAL_LINEA = el total real pagado por esa linea incluyendo IVA e IBUA
-  - Para calcular TOTAL_LINEA: si sin asterisco → VALOR DE VENTA * 1.19 + IBUA; si con asterisco → VALOR DE VENTA + IBUA
+  Columnas: POSICION, DESCRIPCION, CANTIDAD, UNIDAD, CANT_POR_UNIDADES, VALOR_UNITARIO, VALOR_DE_VENTA, VALOR_IBUA
+  ATENCION: "CANT POR UNIDADES" = TOTAL de unidades individuales en el pedido (no unidades por caja)
+  - cantidad_factura = columna CANTIDAD (numero de cajas)
+  - cantidad_por_conversion = CANT_POR_UNIDADES / CANTIDAD (unidades por caja)
+  - IVA: sin asterisco en POSICION = IVA 19%. Con asterisco = sin IVA
+  - valor_unitario_costo = (VALOR_DE_VENTA * factor_IVA + IBUA) / CANT_POR_UNIDADES
+    donde factor_IVA = 1.19 si sin asterisco, 1.0 si con asterisco
   - Ejemplos verificados:
-    * SPRITE 1.5L sin asterisco, CANTIDAD=1, CONV=12, venta=37815, IBUA=0, IVA=6610 → TOTAL=(37815*1.19+0)=45000, valor=45000/(1*12)=3750 ó usar TOTAL FACTURA directamente: 41400/12=3450
-    * COCA COLA 1.5L sin asterisco, CANTIDAD=1, CONV=12, venta=48572, IBUA=7200 → (48572*1.19+7200)/(1*12)=65001/12=5417
-    * COCA COLA ZERO sin asterisco, CANTIDAD=4, CONV=12, venta=218486, IBUA=0 → (218486*1.19)/(4*12)=260018/48=5417
-    * COCA-COLA 400ML sin asterisco, CANTIDAD=2, CONV=12, venta=44935, IBUA=6528 → (44935*1.19+6528)/(2*12)=60001/24=2500
-    * SCHWEPPES con asterisco, CANTIDAD=2, CONV=12, venta=25100, IBUA=0 → 25100/(2*12)=25100/24=1046
-    * BRISA MANZANA 600ML sin asterisco, CANTIDAD=1, CONV=6, venta=10504, IBUA=0 → (10504*1.19)/(1*6)=12500/6=2083
+    * "001 BRISA MANZANA 600ML" CANT=1, CANT_POR_UNID=6, conv=6/1=6, venta=10504, IBUA=0, sin asterisco → (10504*1.19)/6=12500/6=2083
+    * "* 002 SCHWEPPES 400ML" CANT=2, CANT_POR_UNID=24, conv=24/2=12, venta=50200, IBUA=0, CON asterisco → 50200/24=2092
+    * "003 COCA-COLA 400ML" CANT=2, CANT_POR_UNID=24, conv=24/2=12, venta=44935, IBUA=6528, sin asterisco → (44935*1.19+6528)/24=60001/24=2500
+    * "004 COCA COLA 1.5LT" CANT=3, CANT_POR_UNID=36, conv=36/3=12, venta=145714, IBUA=21600, sin asterisco → (145714*1.19+21600)/36=194900/36=5414
+    * "001 SPRITE 1.5L" CANT=1, CANT_POR_UNID=12, conv=12/1=12, TOTAL_FAC=41400, sin asterisco → 41400/12=3450
+    * "001 COCA COLA ZERO 1.5L" CANT=4, CANT_POR_UNID=48, conv=48/4=12, TOTAL_FAC=228800, sin asterisco → 228800/48=4767
 
 PROVEEDOR FRITOLAY / COMERCIALIZADORA NACIONAL SAS LTDA (NIT 830040709) — Pepsico:
   - Columnas: MATERIAL, DESCRIPCIÓN, CANT, UNIDAD, UN/CAJA, V. UNITARIO, DESCUENTO, IVA, VALOR NETO
