@@ -1117,6 +1117,28 @@ function App() {
             setGmailDesde(new Date(ultimoRow[1]).toISOString().slice(0,10));
           }
         }
+        // Cargar maestro de productos nuevos desde Sheets
+        const maestroData = await sheetsGet(token, "Maestro_Nuevos!A2:G");
+        if (maestroData.values?.length > 0) {
+          let nuevosAgregados = 0;
+          maestroData.values.forEach(([proveedor, desc_factura, aliases_str, cod_barras, planograma, unidad_conv, cant_conv]) => {
+            if (!cod_barras) return;
+            const yaExiste = MAESTRO_PRODUCTOS.find(m => m.cod_barras === cod_barras);
+            if (!yaExiste) {
+              MAESTRO_PRODUCTOS.push({
+                proveedor: proveedor || "OTRO",
+                desc_factura: desc_factura || "",
+                aliases: aliases_str ? aliases_str.split("|") : [desc_factura || ""],
+                cod_barras,
+                planograma: planograma || desc_factura || "",
+                unidad_conv: unidad_conv || "Unidad",
+                cant_conv: Number(cant_conv) || 1
+              });
+              nuevosAgregados++;
+            }
+          });
+          if (nuevosAgregados > 0) addLog(`✓ ${nuevosAgregados} productos nuevos cargados desde Sheets`, "lok");
+        }
         addLog("✓ Datos sincronizados desde Google Sheets", "lok");
       } catch(e) {
         addLog("⚠ Sheets no disponible — usando datos locales", "lwrn");
@@ -1396,6 +1418,30 @@ function App() {
           sheetsClear(window._gmailToken, "Costos!A1:B").then(() => sheetsSet(window._gmailToken, "Costos!A1:B", costosRows)).catch(()=>{});
         }
 
+        // Aplicar modificaciones del usuario (cantidades y precios editados) antes de guardar
+        if (resultado.productos) {
+          resultado.productos = resultado.productos.map((p, pi) => {
+            const key = `${resultado.numero_factura}_${pi}`;
+            const cantReal = cantidadesReales[key] !== undefined ? cantidadesReales[key] : p.cantidad_factura;
+            const esCorreccion = correcciones[key] || false;
+            const conv = p.cantidad_por_conversion || 1;
+            const unidadesRecibidas = Math.round(cantReal * conv);
+            let valorXUnidad = p.valor_unitario_costo;
+            if (cantReal !== p.cantidad_factura) {
+              valorXUnidad = esCorreccion && unidadesRecibidas > 0
+                ? Math.round((cantReal * p.valor_unitario_costo) / unidadesRecibidas * unidadesRecibidas) / unidadesRecibidas
+                : (unidadesRecibidas > 0 ? Math.round(p.valor_total_linea / unidadesRecibidas) : p.valor_unitario_costo);
+            }
+            return {
+              ...p,
+              cantidad_factura: cantReal,
+              valor_unitario_costo: Math.round(valorXUnidad),
+              _cantidad_modificada: cantReal !== p.cantidad_factura,
+              _precio_modificado: esCorreccion
+            };
+          });
+        }
+
         // Guardar en historial
         const hist = load("as_historial", []);
         hist.unshift({
@@ -1603,14 +1649,18 @@ function App() {
     
     const lineas = productos.map((p, pi) => {
       const key = `${f.numero_factura}_${pi}`;
+      const conv = p.cantidad_por_conversion || 1;
+      // Si viene del historial (ya tiene _cantidad_modificada o cantidadesReales vacío), usar valores guardados
       const cantReal = cantidadesReales[key] !== undefined ? cantidadesReales[key] : p.cantidad_factura;
       const esCorreccion = correcciones[key] || false;
       const ajustado = cantReal !== p.cantidad_factura;
-      const conv = p.cantidad_por_conversion || 1;
       const unidadesRecibidas = Math.round(cantReal * conv);
-      const valorXUnidad = unidadesRecibidas > 0
-        ? (esCorreccion && ajustado ? (cantReal * p.valor_unitario_costo) / unidadesRecibidas : p.valor_total_linea / unidadesRecibidas)
-        : p.valor_unitario_costo;
+      // Si el producto ya tiene precio modificado guardado y no hay override en cantidadesReales, usar el guardado
+      const valorXUnidad = cantidadesReales[key] !== undefined
+        ? (unidadesRecibidas > 0
+            ? (esCorreccion && ajustado ? (cantReal * p.valor_unitario_costo) / unidadesRecibidas : p.valor_total_linea / unidadesRecibidas)
+            : p.valor_unitario_costo)
+        : p.valor_unitario_costo; // usar valor ya guardado en historial
 
       return {
         ean: p.cod_barras_touchpay,
@@ -1657,6 +1707,15 @@ ${productosSinMapear.length > 0 ? "⚠️ SIN EAN (agregar manualmente): " + pro
       window.open('https://touchpay.market/?#/notas', '_blank');
       setScriptCopiado(true);
       setTimeout(() => setScriptCopiado(false), 10000);
+      // Marcar como "en proceso" para que aparezca el botón Marcar ingresada
+      const hist = [...historial];
+      const idx = hist.findIndex(h => h.numero === f.numero_factura && h.tipo === "ok");
+      if (idx >= 0) {
+        hist[idx] = {...hist[idx], estado_tp: "en_proceso"};
+        save("as_historial", hist);
+        setHistorial(hist);
+      }
+      setTpModal(null);
     });
   };
 
@@ -2186,15 +2245,49 @@ ${productosSinMapear.length > 0 ? "⚠️ SIN EAN (agregar manualmente): " + pro
                               <td style={{padding:"5px 8px", textAlign:"center", color:"var(--muted)"}}>
                                 {p.cod_barras_touchpay||"—"}
                               </td>
-                              <td style={{padding:"5px 8px", textAlign:"center"}}>{p.cantidad_factura}</td>
+                              <td style={{padding:"5px 8px", textAlign:"center"}}>
+                                <input type="number" min="0" step="0.1"
+                                  value={p.cantidad_factura}
+                                  onChange={e => {
+                                    const val = parseFloat(e.target.value) || 0;
+                                    const hist = [...historial];
+                                    const hIdx = hist.findIndex(x => x.numero === h.numero && x.tipo === "ok");
+                                    if (hIdx >= 0) {
+                                      const prods = [...hist[hIdx].data.productos];
+                                      prods[pi] = {...prods[pi], cantidad_factura: val};
+                                      hist[hIdx] = {...hist[hIdx], data: {...hist[hIdx].data, productos: prods}};
+                                      save("as_historial", hist);
+                                      setHistorial(hist);
+                                    }
+                                  }}
+                                  style={{width:52, textAlign:"center", fontFamily:"DM Mono,monospace", fontSize:12, padding:"2px 4px", borderRadius:4, border:"1.5px solid var(--border)", background:"var(--bg)", color:"var(--text)"}}
+                                />
+                              </td>
                               <td style={{padding:"5px 8px", textAlign:"center", color:"var(--muted)", fontSize:10}}>
                                 {p.cantidad_por_conversion > 1 ? `x${p.cantidad_por_conversion}` : "—"}
                               </td>
                               <td style={{padding:"5px 8px", textAlign:"center", fontWeight:700, color:"var(--green)"}}>
-                                {(p.cantidad_factura||1) * (p.cantidad_por_conversion||1)}
+                                {Math.round((p.cantidad_factura||1) * (p.cantidad_por_conversion||1))}
                               </td>
-                              <td style={{padding:"5px 8px", textAlign:"right"}}>{fCOP(p.valor_unitario_costo)}</td>
-                              <td style={{padding:"5px 8px", textAlign:"right", fontWeight:600}}>{fCOP(p.valor_total_linea)}</td>
+                              <td style={{padding:"5px 8px", textAlign:"right"}}>
+                                <input type="number" min="0"
+                                  value={p.valor_unitario_costo}
+                                  onChange={e => {
+                                    const val = parseInt(e.target.value) || 0;
+                                    const hist = [...historial];
+                                    const hIdx = hist.findIndex(x => x.numero === h.numero && x.tipo === "ok");
+                                    if (hIdx >= 0) {
+                                      const prods = [...hist[hIdx].data.productos];
+                                      prods[pi] = {...prods[pi], valor_unitario_costo: val, _precio_modificado: true};
+                                      hist[hIdx] = {...hist[hIdx], data: {...hist[hIdx].data, productos: prods}};
+                                      save("as_historial", hist);
+                                      setHistorial(hist);
+                                    }
+                                  }}
+                                  style={{width:72, textAlign:"right", fontFamily:"DM Mono,monospace", fontSize:12, padding:"2px 4px", borderRadius:4, border:"1.5px solid var(--border)", background:"var(--bg)", color:"var(--text)"}}
+                                />
+                              </td>
+                              <td style={{padding:"5px 8px", textAlign:"right", fontWeight:600}}>{fCOP(Math.round(p.valor_unitario_costo * p.cantidad_factura * (p.cantidad_por_conversion||1)))}</td>
                               <td style={{padding:"5px 8px", textAlign:"center"}}>
                                 {p._es_combo?<span style={{color:"#2e7d32",fontSize:10}}>🔀 Combo</span>:
                                  p._mapeado?<span style={{color:"#1a7f4b",fontSize:10}}>✓ OK</span>:
