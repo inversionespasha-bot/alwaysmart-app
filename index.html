@@ -1609,6 +1609,31 @@ function App() {
     if (aun_sin === 0) setTab("historial");
   };
 
+  const exportarMaestroASheets = async () => {
+    if (!window._gmailToken) { alert("Conecta Gmail primero"); return; }
+    addLog("→ Exportando maestro de productos a Google Sheets...", "linf");
+    try {
+      // Limpiar hoja y reescribir completa
+      await sheetsClear(window._gmailToken, "Maestro_Nuevos!A1:G");
+      const rows = [["proveedor","desc_factura","aliases","cod_barras","planograma","unidad_conv","cant_conv"]];
+      MAESTRO_PRODUCTOS.forEach(p => {
+        rows.push([
+          p.proveedor || "",
+          p.desc_factura || "",
+          Array.isArray(p.aliases) ? p.aliases.join("|") : (p.aliases || ""),
+          p.cod_barras || "",
+          p.planograma || "",
+          p.unidad_conv || "Unidad",
+          p.cant_conv || 1
+        ]);
+      });
+      await sheetsSet(window._gmailToken, "Maestro_Nuevos!A1:G", rows);
+      addLog(`✓ ${MAESTRO_PRODUCTOS.length} productos exportados a Google Sheets`, "lok");
+    } catch(e) {
+      addLog("✗ Error exportando: " + e.message, "lerr");
+    }
+  };
+
   const borrarHistorial = () => {
     if (!confirmBorrar) { setConfirmBorrar(true); return; }
     localStorage.removeItem("as_historial");
@@ -2029,6 +2054,9 @@ ${productosSinMapear.length > 0 ? "⚠️ SIN EAN (agregar manualmente): " + pro
                     </div>
                     <button className="bsm bout" onClick={()=>{save("as_gmail_token",null);setGmailToken(null);setGmailCorreos([]);addLog("→ Gmail desconectado","linf");}}>
                       🔌 Desconectar
+                    </button>
+                    <button className="bsm" style={{background:"var(--bg2)",color:"var(--text)",border:"1.5px solid var(--border)",fontSize:11}} onClick={exportarMaestroASheets}>
+                      ☁️ Exportar maestro
                     </button>
                   </div>
                   {/* Fila inferior: selector fecha + botones */}
