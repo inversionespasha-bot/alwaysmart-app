@@ -1712,16 +1712,21 @@ function App() {
       if (partes.length === 3) fechaISO = `${partes[2]}-${partes[1].padStart(2,'0')}-${partes[0].padStart(2,'0')}`;
     } catch(e) {}
 
-    const script = `Ingresa esta factura en TouchPay. Sigue el procedimiento conocido exactamente.
+    const script = `Ingresa esta factura en TouchPay. MODO RÁPIDO: ejecuta cada paso sin pausas ni verificaciones intermedias. Solo toma screenshot si algo falla.
 
 FACTURA: ${f.numero_factura} | FECHA: ${fechaISO ? fechaISO.substring(0,7)+"-"+parseInt(fechaISO.substring(8,10)) : f.fecha_emision} | INVENTARIO: ${INVENTARIO}
-PROVEEDOR: ${f.proveedor}
+PROVEEDOR: ${f.proveedor} | ${lineas.length} productos
 
-INSTRUCCIÓN PRODUCTOS: Para cada línea → EAN|VALOR|CANTIDAD|conv=1 → AGREGAR OTRO (último → AGREGAR Y FINALIZAR)
+PASOS:
+1. JavaScript click en botón AGREGAR NOTA → seleccionar Manual → si popup aparece: CONTINUAR EN PÁGINA ACTUAL
+2. Llenar formulario: Número=${f.numero_factura} | NFe=${f.numero_factura} | Fecha=${fechaISO ? fechaISO.substring(8,10)+"/"+fechaISO.substring(5,7)+"/"+fechaISO.substring(0,4) : f.fecha_emision} | Inventario=Stock Central 15 → SIGUIENTE
+3. Por cada producto: EAN → precio → cantidad → conv=1 → AGREGAR OTRO (último: AGREGAR Y FINALIZAR)
+4. Confirmar y guardar
 
-${lineas.map((p, i) => `${i+1}. ${p.ean}|${p.precio}|${p.cantidad}${i === lineas.length-1 ? " → FINALIZAR" : ""}`).join("\n")}
+PRODUCTOS (EAN|precio|cantidad):
+${lineas.map((p, i) => `${i+1}. ${p.ean}|${p.precio}|${p.cantidad}${i === lineas.length-1 ? " ← ÚLTIMO" : ""}`).join("\n")}
 
-${productosSinMapear.length > 0 ? "⚠️ SIN EAN (agregar manualmente): " + productosSinMapear.map(p => p.descripcion).join(", ") : "✓ Todos mapeados"}`;
+${productosSinMapear.length > 0 ? "⚠️ SIN EAN: " + productosSinMapear.map(p => p.descripcion).join(", ") : "✓ Todos mapeados"}`;
 
     return { script, lineas, productosSinMapear };
   };
