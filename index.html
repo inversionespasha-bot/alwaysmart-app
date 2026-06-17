@@ -1741,58 +1741,6 @@ ${productosSinMapear.length > 0 ? "⚠️ SIN EAN: " + productosSinMapear.map(p 
     });
   };
 
-  const lanzarAutoJS = (f) => {
-    const { lineas } = generarScriptTP(f, cantidadesReales, correcciones);
-    const datos = {
-      numero: f.numero_factura,
-      productos: lineas.map(p => ({ ean: p.ean, precio: p.precio, cantidad: p.cantidad }))
-    };
-    const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(datos))));
-    const jsScript = `(async()=>{
-const d=JSON.parse(decodeURIComponent(escape(atob('${encoded}'))));
-const sl=ms=>new Promise(r=>setTimeout(r,ms));
-const ty=async(el,txt)=>{el.focus();for(const c of txt.toString()){const s=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;s.call(el,el.value+c);el.dispatchEvent(new Event('input',{bubbles:true}));await sl(25);}};
-const sv=(el,v)=>{try{const s=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;s.call(el,v.toString());}catch(e){el.value=v.toString();}el.dispatchEvent(new Event('input',{bubbles:true}));};
-const cb=t=>{const b=Array.from(document.querySelectorAll('button')).find(x=>x.textContent.toUpperCase().includes(t.toUpperCase()));if(b)b.click();return!!b;};
-const wd=async(ms=3000)=>{const t=Date.now();while(Date.now()-t<ms){const items=Array.from(document.querySelectorAll('.v-menu__content .v-list-item')).filter(x=>!x.closest('.v-navigation-drawer'));if(items.length>0)return items[0];await sl(100);}return null;};
-const selUnidad=async()=>{const lbl=Array.from(document.querySelectorAll('label.v-label')).find(l=>l.textContent.trim()==='Unidad de conversión');if(!lbl)return;const inp=lbl.closest('.v-input')?.querySelector('input[type="text"]');if(inp){inp.click();await sl(600);const opts=Array.from(document.querySelectorAll('.v-menu__content .v-list-item')).filter(x=>!x.closest('.v-navigation-drawer'));const u=opts.find(o=>o.textContent.trim()==='Unidad');if(u){u.click();await sl(300);}}};
-// Abrir formulario
-cb('AGREGAR NOTA');await sl(800);
-const m=Array.from(document.querySelectorAll('button,.v-list-item')).find(x=>x.textContent.trim()==='Manual');if(m)m.click();await sl(500);
-const cp=Array.from(document.querySelectorAll('button')).find(x=>x.textContent.includes('CONTINUAR EN'));if(cp)cp.click();await sl(500);
-// Info factura
-const ins=document.querySelectorAll('input[type="text"],input[type="number"]');
-sv(ins[0],d.numero);await sl(150);sv(ins[1],d.numero);await sl(150);
-const acs=document.querySelectorAll('.v-autocomplete input[type="text"]');
-await ty(acs[0],'Stock Central 15');await sl(800);
-const inv=await wd(2000);if(inv){inv.click();await sl(300);}
-cb('SIGUIENTE');await sl(800);
-// Productos
-for(let i=0;i<d.productos.length;i++){
-const p=d.productos[i];const ul=i===d.productos.length-1;
-const ac2=document.querySelectorAll('.v-autocomplete input[type="text"]');
-await ty(ac2[1],p.ean.toString());await sl(1200);
-const item=await wd(3000);if(item){item.click();await sl(400);}
-const nums=document.querySelectorAll('input[type="number"]');
-sv(nums[0],p.precio);await sl(100);sv(nums[1],p.cantidad);await sl(100);
-await selUnidad();
-sv(document.querySelectorAll('input[type="number"]')[2],1);await sl(100);
-if(ul)cb('AGREGAR Y FINALIZAR');else cb('AGREGAR OTRO');await sl(600);
-}
-await sl(800);cb('RECIBIR PRODUCTOS');
-console.log('✓ Factura '+d.numero+' ingresada');
-})();`;
-    navigator.clipboard.writeText(jsScript).then(() => {
-      window.open('https://touchpay.market/?#/notas', '_blank');
-      setScriptCopiado(true);
-      setTimeout(() => setScriptCopiado(false), 15000);
-      const hist = [...historial];
-      const idx = hist.findIndex(h => h.numero === f.numero_factura && h.tipo === "ok");
-      if (idx >= 0) { hist[idx] = {...hist[idx], estado_tp: "en_proceso"}; save("as_historial", hist); setHistorial(hist); }
-      setTpModal(null);
-    });
-  };
-
   const lanzarEnTouchPay = (f) => {
     const { script } = generarScriptTP(f, cantidadesReales, correcciones);
     navigator.clipboard.writeText(script).then(() => {
@@ -2509,16 +2457,10 @@ console.log('✓ Factura '+d.numero+' ingresada');
               <div className="tp-script-box">{script}</div>
 
               {/* Botón principal RUN */}
-              <div style={{display:"flex",gap:8,marginBottom:10}}>
-                <button className="btn-main" style={{flex:1,fontSize:13,padding:"10px"}}
-                  onClick={()=>lanzarEnTouchPay(tpModal)}>
-                  🚀 Script
-                </button>
-                <button className="btn-main" style={{flex:1,fontSize:13,padding:"10px",background:"#7c3aed"}}
-                  onClick={()=>lanzarAutoJS(tpModal)}>
-                  ⚡ Auto JS
-                </button>
-              </div>
+              <button className="btn-main" style={{width:"100%",marginBottom:10,fontSize:14,padding:"12px"}}
+                onClick={()=>lanzarEnTouchPay(tpModal)}>
+                🚀 Copiar script y abrir TouchPay
+              </button>
 
               {scriptCopiado && (
                 <div style={{padding:"12px 16px",background:"#e8f5e9",border:"1.5px solid #4caf50",borderRadius:10,marginBottom:10}}>
