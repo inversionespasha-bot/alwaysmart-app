@@ -1752,7 +1752,7 @@ ${productosSinMapear.length > 0 ? "⚠️ SIN EAN: " + productosSinMapear.map(p 
 const d=JSON.parse(decodeURIComponent(escape(atob('${encoded}'))));
 const sl=ms=>new Promise(r=>setTimeout(r,ms));
 const ty=async(el,txt)=>{el.focus();for(const c of txt.toString()){const s=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;s.call(el,el.value+c);el.dispatchEvent(new Event('input',{bubbles:true}));await sl(25);}};
-const sv=(el,v)=>{const s=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;s.call(el,v.toString());el.dispatchEvent(new Event('input',{bubbles:true}));};
+const sv=(el,v)=>{try{const s=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;s.call(el,v.toString());}catch(e){el.value=v.toString();}el.dispatchEvent(new Event('input',{bubbles:true}));};
 const cb=t=>{const b=Array.from(document.querySelectorAll('button')).find(x=>x.textContent.toUpperCase().includes(t.toUpperCase()));if(b)b.click();return!!b;};
 const wd=async(ms=3000)=>{const t=Date.now();while(Date.now()-t<ms){const items=Array.from(document.querySelectorAll('.v-menu__content .v-list-item')).filter(x=>!x.closest('.v-navigation-drawer'));if(items.length>0)return items[0];await sl(100);}return null;};
 const selUnidad=async()=>{const lbl=Array.from(document.querySelectorAll('label.v-label')).find(l=>l.textContent.trim()==='Unidad de conversión');if(!lbl)return;const inp=lbl.closest('.v-input')?.querySelector('input[type="text"]');if(inp){inp.click();await sl(600);const opts=Array.from(document.querySelectorAll('.v-menu__content .v-list-item')).filter(x=>!x.closest('.v-navigation-drawer'));const u=opts.find(o=>o.textContent.trim()==='Unidad');if(u){u.click();await sl(300);}}};
