@@ -8,6 +8,7 @@
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 </head>
@@ -1052,6 +1053,11 @@ function App() {
   const [ultimoProcesamiento, setUltimoProcesamiento] = useState(() => load("as_ultimo_gmail", null));
   const [gmailDesde, setGmailDesde] = useState(() => { const u = load("as_ultimo_gmail", null); return u ? new Date(u).toISOString().slice(0,10) : new Date().toISOString().slice(0,10); });
   const [tpModal, setTpModal] = useState(null); // factura activa en modal TouchPay
+  const [pedidosData, setPedidosData] = useState(null); // {proveedores, fecha}
+  const [pedidosProv, setPedidosProv] = useState(null); // proveedor activo
+  const [pedidosLoading, setPedidosLoading] = useState(false);
+  const [pedidosSearch, setPedidosSearch] = useState('');
+  const [pedidosCopied, setPedidosCopied] = useState(false);
   const [mapeoModal, setMapeoModal] = useState(null); // {histIdx, productos sin mapear}
   const [mapeoEans, setMapeoEans] = useState({}); // {descripcion: ean ingresado}
   const [seleccionadas, setSeleccionadas] = useState(new Set()); // indices seleccionados para script múltiple
@@ -1644,6 +1650,127 @@ function App() {
     }
   };
 
+  const calcularPedidosDesdeArchivos = async (invFile, venFile) => {
+    setPedidosLoading(true);
+    addLog('→ Procesando inventario y ventas...', 'linf');
+    try {
+      const readXlsx = (file) => new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = e => resolve(e.target.result);
+        reader.onerror = reject;
+        reader.readAsArrayBuffer(file);
+      });
+      const XLSX = window.XLSX;
+      const invBuf = await readXlsx(invFile);
+      const venBuf = await readXlsx(venFile);
+      const invWb = XLSX.read(invBuf, {type:'array'});
+      const venWb = XLSX.read(venBuf, {type:'array'});
+      const invRows = XLSX.utils.sheet_to_json(invWb.Sheets[invWb.SheetNames[0]]);
+      const venRows = XLSX.utils.sheet_to_json(venWb.Sheets[venWb.SheetNames[0]]);
+      const resultado = procesarPedidosDatos(invRows, venRows);
+      setPedidosData(resultado);
+      setPedidosProv(Object.keys(resultado.proveedores)[0] || null);
+      addLog(`✓ Pedidos calculados — ${Object.keys(resultado.proveedores).length} proveedores`, 'lok');
+    } catch(e) {
+      addLog('✗ Error procesando archivos: ' + e.message, 'lerr');
+    }
+    setPedidosLoading(false);
+  };
+
+  const procesarPedidosDatos = (invRows, venRows) => {
+    const cleanEan = v => { try { let s=String(v).trim().replace('.0',''); if(s.includes('E')||s.includes('e')) s=String(parseInt(parseFloat(s))); return s; } catch(e) { return String(v).trim(); }};
+    const PDV_MAP = {
+      'PDV 1651 - CERATTO APARTAMENTOS - MEDELLIN': 'Ceratto',
+      'PDV 2311 - MANZANAL  - ENVIGADO': 'Manzanal',
+      'PDV 2313 - CURUBAL - ENVIGADO': 'Curubal',
+    };
+    // Build inventory maps
+    const cantMap = {}, niMap = {}, mcMap = {}, stockMap = {};
+    invRows.forEach(r => {
+      const ean = cleanEan(r['Código de barras'] || r['Codigo de barras'] || '');
+      if (!ean) return;
+      const pdv = PDV_MAP[r['PDV asociado']];
+      const cant = parseFloat(r['Cantidad'] || 0);
+      const ni = parseFloat(r['Quantidade desejada'] || 0);
+      const mc = parseFloat(r['Mínimo crítico'] || r['Minimo critico'] || 0);
+      if (!pdv) { stockMap[ean] = (stockMap[ean]||0) + cant; }
+      else {
+        if (!cantMap[ean]) cantMap[ean] = {};
+        if (!niMap[ean]) niMap[ean] = {};
+        if (!mcMap[ean]) mcMap[ean] = {};
+        cantMap[ean][pdv] = (cantMap[ean][pdv]||0) + cant;
+        niMap[ean][pdv] = ni;
+        mcMap[ean][pdv] = mc;
+      }
+    });
+    // Build ventas map
+    const ventasMap = {};
+    venRows.forEach(r => {
+      const ean = cleanEan(r['Cód. barras '] || r['Código Producto'] || r['Cod. barras'] || '');
+      if (!ean) return;
+      ventasMap[ean] = { ventas: parseFloat(r['Saídas/Vendas'] || r['Cantidad'] || 0), costo: parseFloat(r['Última Compra (Custo)'] || r['Ultimo Costo'] || 0), desc: r['Descripción'] || r['Descripcion del producto'] || '' };
+    });
+    // Build maestro lookup
+    const maestroMap = {};
+    MAESTRO_PRODUCTOS.forEach(p => { maestroMap[p.cod_barras] = p; });
+    // Calculate pedido per EAN
+    const pdvs = ['Ceratto','Manzanal','Curubal'];
+    const pedidosPorProv = {};
+    const allEans = new Set([...Object.keys(cantMap), ...Object.keys(venRows.map(r => cleanEan(r['Cód. barras '] || r['Código Producto'] || '')).filter(Boolean))]);
+    venRows.forEach(r => {
+      const ean = cleanEan(r['Cód. barras '] || r['Código Producto'] || '');
+      if (!ean || !cantMap[ean]) return;
+      const vd = (ventasMap[ean]?.ventas || 0) / 16;
+      const stock = stockMap[ean] || 0;
+      let nec = false;
+      pdvs.forEach(pdv => {
+        if (cantMap[ean]?.[pdv] === undefined) return;
+        const cant = cantMap[ean][pdv] || 0;
+        const mc = mcMap[ean]?.[pdv] ?? 0;
+        if (cant <= mc) nec = true;
+      });
+      if (!nec) return;
+      let falt = 0;
+      pdvs.forEach(pdv => {
+        if (cantMap[ean]?.[pdv] === undefined) return;
+        const ni = niMap[ean]?.[pdv] || 0;
+        const cant = cantMap[ean][pdv] || 0;
+        falt += Math.max(0, ni - cant);
+      });
+      const pedir = Math.floor(Math.max(0, falt - stock + Math.round(vd * 4)));
+      if (pedir <= 0) return;
+      const m = maestroMap[ean];
+      const prov = m?.proveedor || r['Nombre del Proveedor'] || 'OTROS';
+      const descProv = m?.desc_factura || ventasMap[ean]?.desc || '';
+      const pres = m?.unidad_conv || 'Unidad';
+      const uniPres = m?.cant_conv || 1;
+      const pedidoFinal = pres.toLowerCase() === 'unidad' || uniPres <= 1 ? pedir : Math.ceil(pedir / uniPres);
+      if (!pedidosPorProv[prov]) pedidosPorProv[prov] = [];
+      pedidosPorProv[prov].push({ ean, desc: descProv, pres: pres.toUpperCase(), pedido: pedidoFinal, costo: ventasMap[ean]?.costo || 0 });
+    });
+    // Sort
+    Object.keys(pedidosPorProv).forEach(p => pedidosPorProv[p].sort((a,b) => a.desc.localeCompare(b.desc)));
+    return { proveedores: pedidosPorProv, fecha: new Date().toLocaleDateString('es-CO') };
+  };
+
+  const copiarPedidoWhatsApp = () => {
+    if (!pedidosData || !pedidosProv) return;
+    const items = pedidosData.proveedores[pedidosProv] || [];
+    const total = items.reduce((s,i) => s+i.pedido, 0);
+    let txt = `*PEDIDO INVERSIONES PASHA — ${pedidosData.fecha}*
+*${pedidosProv}*
+
+`;
+    items.forEach(i => { txt += `• ${i.pedido} ${i.pres} — ${i.desc}
+`; });
+    txt += `
+_Total: ${total} unidades_`;
+    navigator.clipboard.writeText(txt).then(() => {
+      setPedidosCopied(true);
+      setTimeout(() => setPedidosCopied(false), 2500);
+    });
+  };
+
   const borrarHistorial = () => {
     if (!confirmBorrar) { setConfirmBorrar(true); return; }
     localStorage.removeItem("as_historial");
@@ -1837,6 +1964,7 @@ ${productosSinMapear.length > 0 ? "⚠️ SIN EAN: " + productosSinMapear.map(p 
             <button className={`tab${tab==="procesar"?" active":""}`} onClick={()=>setTab("procesar")}>📄 Procesar Facturas</button>
             <button className={`tab${tab==="historial"?" active":""}`} onClick={()=>setTab("historial")}>📋 Historial {historial.length>0&&`(${historial.length})`}</button>
             <button className={`tab${tab==="gmail"?" active":""}`} onClick={()=>setTab("gmail")}>📧 Gmail</button>
+            <button className={`tab${tab==="pedidos"?" active":""}`} onClick={()=>setTab("pedidos")}>🛒 Pedidos{pedidosData&&<span style={{marginLeft:4,fontSize:10,background:"var(--green)",color:"#fff",borderRadius:10,padding:"1px 6px"}}>{Object.keys(pedidosData.proveedores).length}</span>}</button>
           </div>
 
           {/* TAB PROCESAR */}
