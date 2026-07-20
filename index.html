@@ -333,7 +333,7 @@ JSON: {"proveedor":"...","nit_proveedor":"...","numero_factura":"...","fecha_emi
     },
     body: JSON.stringify({
       model: "claude-sonnet-4-6",
-      max_tokens: 8000,
+      max_tokens: 8192,
       messages: [{
         role: "user",
         content: [
@@ -345,10 +345,15 @@ JSON: {"proveedor":"...","nit_proveedor":"...","numero_factura":"...","fecha_emi
   });
   if (!response.ok) { const e = await response.json(); throw new Error(e.error?.message || "Error API"); }
   const data = await response.json();
+  if (data.stop_reason === "max_tokens") throw new Error("Respuesta cortada por límite de tokens — factura con demasiados productos para procesar de una vez");
   const raw = data.content.map((c) => c.text || "").join("");
   const s = raw.indexOf("{"), e = raw.lastIndexOf("}");
   if (s === -1 || e === -1) throw new Error("Sin JSON válido");
-  return JSON.parse(raw.substring(s, e + 1));
+  try {
+    return JSON.parse(raw.substring(s, e + 1));
+  } catch (err) {
+    throw new Error(`JSON inválido (posible corte por límite de tokens): ${err.message}`);
+  }
 }
 
 async function llamarAPI(texto, apiKey) {
@@ -709,14 +714,19 @@ JSON:{"proveedor":"...","nit_proveedor":"...","numero_factura":"...","fecha_emis
       "anthropic-version": "2023-06-01",
       "anthropic-dangerous-direct-browser-access": "true",
     },
-    body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 8000, messages: [{ role: "user", content: prompt }] }),
+    body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 8192, messages: [{ role: "user", content: prompt }] }),
   });
   if (!res.ok) { const e = await res.json(); throw new Error(e.error?.message || "Error API"); }
   const data = await res.json();
+  if (data.stop_reason === "max_tokens") throw new Error("Respuesta cortada por límite de tokens — factura con demasiados productos para procesar de una vez");
   const raw = data.content.map((c) => c.text || "").join("");
   const s = raw.indexOf("{"), e = raw.lastIndexOf("}");
   if (s === -1 || e === -1) throw new Error("Sin JSON válido");
-  return JSON.parse(raw.substring(s, e + 1));
+  try {
+    return JSON.parse(raw.substring(s, e + 1));
+  } catch (err) {
+    throw new Error(`JSON inválido (posible corte por límite de tokens): ${err.message}`);
+  }
 }
 
 
@@ -1058,6 +1068,8 @@ function App() {
   const [pedidosLoading, setPedidosLoading] = useState(false);
   const [pedidosSearch, setPedidosSearch] = useState('');
   const [pedidosCopied, setPedidosCopied] = useState(false);
+  const [pedidosInvFile, setPedidosInvFile] = useState(null);
+  const [pedidosVenFile, setPedidosVenFile] = useState(null);
   const [mapeoModal, setMapeoModal] = useState(null); // {histIdx, productos sin mapear}
   const [mapeoEans, setMapeoEans] = useState({}); // {descripcion: ean ingresado}
   const [seleccionadas, setSeleccionadas] = useState(new Set()); // indices seleccionados para script múltiple
@@ -2167,6 +2179,111 @@ ${productosSinMapear.length > 0 ? "⚠️ SIN EAN: " + productosSinMapear.map(p 
                 );
               })}
             </>}
+          </>}
+
+          {tab==="pedidos"&&<>
+            <div className="sec-title">Pedidos a Proveedores</div>
+            <div className="sec-sub">// Carga inventario y ventas de TouchPay → calcula qué pedir por PDV y proveedor</div>
+
+            <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:16}}>
+              <div className={`drop${pedidosInvFile?" over":""}`} style={{flex:"1 1 260px"}}>
+                <input type="file" accept=".xlsx,.xls" onChange={e=>setPedidosInvFile(e.target.files[0]||null)}/>
+                <div className="drop-icon">📦</div>
+                <div className="drop-title">{pedidosInvFile?pedidosInvFile.name:"Inventario (Inventario_*.xlsx)"}</div>
+                <div className="drop-sub">{pedidosInvFile?"Archivo cargado ✓":"Arrastra o haz clic — exportado de TouchPay"}</div>
+              </div>
+              <div className={`drop${pedidosVenFile?" over":""}`} style={{flex:"1 1 260px"}}>
+                <input type="file" accept=".xlsx,.xls" onChange={e=>setPedidosVenFile(e.target.files[0]||null)}/>
+                <div className="drop-icon">📈</div>
+                <div className="drop-title">{pedidosVenFile?pedidosVenFile.name:"Ventas (Sugerencia_de_Compras.xlsx)"}</div>
+                <div className="drop-sub">{pedidosVenFile?"Archivo cargado ✓":"Arrastra o haz clic — exportado de TouchPay"}</div>
+              </div>
+            </div>
+
+            <button className="btn-main" disabled={!pedidosInvFile||!pedidosVenFile||pedidosLoading}
+              onClick={()=>calcularPedidosDesdeArchivos(pedidosInvFile, pedidosVenFile)}>
+              {pedidosLoading?<><span className="spin"/>Calculando pedidos...</>:"Calcular pedidos"}
+            </button>
+
+            {!pedidosData && !pedidosLoading && (
+              <div className="empty" style={{marginTop:20}}>
+                <div className="empty-icon">🛒</div>
+                <div>Carga los dos archivos de TouchPay para calcular los pedidos</div>
+              </div>
+            )}
+
+            {pedidosData && (()=>{
+              const provs = Object.keys(pedidosData.proveedores);
+              const items = (pedidosData.proveedores[pedidosProv]||[]).filter(i=>
+                !pedidosSearch.trim() || i.desc.toLowerCase().includes(pedidosSearch.trim().toLowerCase())
+              );
+              const total = items.reduce((s,i)=>s+i.pedido,0);
+              const totalCosto = items.reduce((s,i)=>s+i.pedido*(i.costo||0),0);
+              return (<>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginTop:20,marginBottom:12,flexWrap:"wrap",gap:8}}>
+                  <div style={{fontFamily:"DM Mono,monospace",fontSize:11,color:"var(--muted)"}}>Calculado el {pedidosData.fecha} · {provs.length} proveedor{provs.length!==1?"es":""}</div>
+                  <button className="bsm bout" onClick={()=>{setPedidosData(null);setPedidosInvFile(null);setPedidosVenFile(null);}}>↺ Recalcular</button>
+                </div>
+
+                <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:16}}>
+                  {provs.map(p=>(
+                    <button key={p} className={`tab${pedidosProv===p?" active":""}`} onClick={()=>setPedidosProv(p)}>
+                      {p} <span style={{marginLeft:4,fontSize:10,background:"var(--green)",color:"#fff",borderRadius:10,padding:"1px 6px"}}>{pedidosData.proveedores[p].length}</span>
+                    </button>
+                  ))}
+                </div>
+
+                {pedidosProv && (<>
+                  <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:12,flexWrap:"wrap"}}>
+                    <input type="text" placeholder="🔍 Buscar producto..." value={pedidosSearch} onChange={e=>setPedidosSearch(e.target.value)}
+                      style={{flex:"1 1 220px",padding:"8px 12px",borderRadius:8,border:"1.5px solid var(--border)",background:"var(--bg)",color:"var(--text)",fontFamily:"DM Mono,monospace",fontSize:12}}/>
+                    <button className="btn-main" style={{width:"auto",padding:"9px 18px",fontSize:13}} onClick={copiarPedidoWhatsApp}>
+                      {pedidosCopied?"✅ Copiado":"📋 Copiar para WhatsApp"}
+                    </button>
+                  </div>
+
+                  {items.length===0?(
+                    <div className="empty">
+                      <div className="empty-icon">🔍</div>
+                      <div>Sin resultados{pedidosSearch?` para "${pedidosSearch}"`:" — no hay productos para pedir en este proveedor"}</div>
+                    </div>
+                  ):(
+                    <div className="tw">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Producto</th>
+                            <th>Presentación</th>
+                            <th style={{color:"var(--green)"}}>Pedido</th>
+                            <th>Costo unit.</th>
+                            <th>Total</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {items.map((it,ii)=>(
+                            <tr key={ii}>
+                              <td style={{fontWeight:600}}>{it.desc}</td>
+                              <td className="tmono" style={{color:"var(--muted)"}}>{it.pres}</td>
+                              <td className="tmono" style={{textAlign:"center",fontWeight:700,color:"var(--green)"}}>{it.pedido}</td>
+                              <td className="tmono">{fCOP(it.costo)}</td>
+                              <td className="tmono">{fCOP(it.pedido*(it.costo||0))}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                        <tfoot>
+                          <tr style={{borderTop:"2px solid var(--border)", background:"var(--surface)"}}>
+                            <td colSpan={2} style={{padding:"6px 8px", textAlign:"right", fontWeight:700, fontSize:12}}>TOTAL:</td>
+                            <td style={{padding:"6px 8px", textAlign:"center", fontWeight:700, fontSize:12, color:"var(--green)"}}>{total}</td>
+                            <td/>
+                            <td style={{padding:"6px 8px", textAlign:"right", fontWeight:700, fontSize:12, color:"var(--green)"}}>{fCOP(totalCosto)}</td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                  )}
+                </>)}
+              </>);
+            })()}
           </>}
 
           {tab==="gmail"&&<>
