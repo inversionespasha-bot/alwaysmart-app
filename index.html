@@ -1118,6 +1118,16 @@ function App() {
     client.requestAccessToken();
   });
 
+  // El refresh silencioso (prompt:"none") puede quedarse colgado para siempre si el
+  // navegador bloquea cookies de terceros — Google nunca dispara el callback. Este wrapper
+  // le pone un límite de tiempo y avisa con un error claro en vez de dejar el botón pegado.
+  const obtenerTokenFrescoConTimeout = (silencioso = false, ms = 8000) => {
+    return Promise.race([
+      obtenerTokenFresco(silencioso),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("TIMEOUT_REFRESH_SILENCIOSO")), ms))
+    ]);
+  };
+
   const conectarGmail = async () => {
     setGmailLoading(true);
     setGmailProcesando(false); // Reset por si quedó colgado
@@ -1201,7 +1211,13 @@ function App() {
       // Token expirado → refrescar silenciosamente y reintentar
       if (data.error && (data.error.code === 401 || data.error.status === "UNAUTHENTICATED")) {
         addLog("→ Token expirado — refrescando automáticamente...", "linf");
-        const nuevoToken = await obtenerTokenFresco(true);
+        let nuevoToken;
+        try {
+          nuevoToken = await obtenerTokenFrescoConTimeout(true);
+        } catch (errSilencioso) {
+          addLog("⚠ El refresco en silencio no respondió (posible bloqueo de cookies de terceros del navegador) — se abrirá una ventana para reconectar Gmail", "lwrn");
+          nuevoToken = await obtenerTokenFrescoConTimeout(false, 60000);
+        }
         setGmailToken(nuevoToken);
         save("as_gmail_token", nuevoToken);
         window._gmailToken = nuevoToken;
@@ -1231,7 +1247,7 @@ function App() {
     // Refrescar token silenciosamente antes de descargar
     let tokenActivo = gmailToken;
     try {
-      tokenActivo = await obtenerTokenFresco(true);
+      tokenActivo = await obtenerTokenFrescoConTimeout(true);
       setGmailToken(tokenActivo);
       save("as_gmail_token", tokenActivo);
       window._gmailToken = tokenActivo;
