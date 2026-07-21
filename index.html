@@ -892,6 +892,26 @@ const PROVEEDOR_MAP = {
   "D1 S A S": "D1",
 };
 
+// Correos que NUNCA deben analizarse como facturas — ni por remitente ni por asunto:
+// proveedores administrativos (seguros, gasolina, internet) + cuentas/dominios propios de la empresa.
+const TERMINOS_EXCLUSION_GMAIL = [
+  "COMPAÑIA MUNDIAL DE SEGUROS",
+  "COMPAÑÍA MUNDIAL DE SEGUROS",
+  "SOMOS NETWORKS COLOMBIA",
+  "GRUPO EDS AUTOGAS",
+  "ALWAYSMART LAB SAS",
+  "ALSMART COLOMBIA SAS",
+  "alwaysmartcolombia.com",
+  "alexander.calderon@alwaysmartcolombia.com",
+];
+const esCorreoExcluido = (fromHeaderRaw, subjectRaw) => {
+  const s = ((fromHeaderRaw || "") + " " + (subjectRaw || "")).toUpperCase();
+  return TERMINOS_EXCLUSION_GMAIL.some(t => s.includes(t.toUpperCase()));
+};
+// Cláusulas "-from:"/"-subject:" para filtrar de raíz en la query de Gmail (ahorra cuota;
+// el filtro del lado del cliente de arriba queda como respaldo por si Gmail no matchea algo)
+const CLAUSULA_EXCLUSION_QUERY = ' -from:alwaysmartcolombia.com -from:"COMPAÑIA MUNDIAL DE SEGUROS" -from:"SOMOS NETWORKS COLOMBIA" -from:"GRUPO EDS AUTOGAS" -subject:"COMPAÑIA MUNDIAL DE SEGUROS" -subject:"SOMOS NETWORKS COLOMBIA" -subject:"GRUPO EDS AUTOGAS"';
+
 function normalizarProveedor(prov) {
   if (!prov) return prov;
   return PROVEEDOR_MAP[prov.trim()] || prov.trim();
@@ -1198,7 +1218,7 @@ function App() {
     const ejecutarBusqueda = async (token) => {
       const desdeDate = new Date(gmailDesde + "T00:00:00");
       const despues = Math.floor(desdeDate.getTime() / 1000);
-      const query = "has:attachment (filename:zip OR filename:ZIP OR filename:.zip) after:" + despues;
+      const query = "has:attachment (filename:zip OR filename:ZIP OR filename:.zip) after:" + despues + CLAUSULA_EXCLUSION_QUERY;
       addLog(`→ Buscando correos con ZIP desde ${desdeDate.toLocaleDateString("es-CO")}...`, "linf");
       const res = await fetch(
         "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=" + encodeURIComponent(query) + "&maxResults=50&format=metadata&metadataHeaders=From&metadataHeaders=Subject",
@@ -1224,17 +1244,22 @@ function App() {
         data = await ejecutarBusqueda(nuevoToken);
       }
       if (data.error) { addLog("✗ Error Gmail: " + data.error.message, "lerr"); setGmailLoading(false); return; }
-      const msgs = (data.messages || []).map(m => {
-        // Extraer nombre del remitente del header From
-        const fromHeader = m.payload?.headers?.find(h => h.name === "From")?.value || "";
-        const fromName = fromHeader.replace(/<[^>]+>/g,"").replace(/"/g,"").trim() || "Proveedor desconocido";
-        return { ...m, remitente: fromName };
-      });
+      const totalBrutos = (data.messages || []).length;
+      const msgs = (data.messages || [])
+        .map(m => {
+          // Extraer nombre del remitente del header From
+          const fromHeader = m.payload?.headers?.find(h => h.name === "From")?.value || "";
+          const fromName = fromHeader.replace(/<[^>]+>/g,"").replace(/"/g,"").trim() || "Proveedor desconocido";
+          const subjectHeader = m.payload?.headers?.find(h => h.name === "Subject")?.value || "";
+          return { ...m, remitente: fromName, _fromHeaderRaw: fromHeader, _subjectRaw: subjectHeader };
+        })
+        .filter(m => !esCorreoExcluido(m._fromHeaderRaw, m._subjectRaw));
+      const excluidosPropios = totalBrutos - msgs.length;
       setGmailCorreos(msgs);
       // Agrupar por remitente para el log
       const porRemitente = msgs.reduce((acc, m) => { acc[m.remitente] = (acc[m.remitente]||0)+1; return acc; }, {});
       const resumen = Object.entries(porRemitente).map(([r,n]) => `${r} (${n})`).join(" · ");
-      addLog(`→ ${msgs.length} correos encontrados: ${resumen}`, msgs.length > 0 ? "lok" : "lwrn");
+      addLog(`→ ${msgs.length} correos encontrados: ${resumen}${excluidosPropios > 0 ? ` · ⊘ ${excluidosPropios} excluidos (correo propio)` : ""}`, msgs.length > 0 ? "lok" : "lwrn");
     } catch(e) {
       addLog("✗ Error: " + e + " — intenta desconectar y reconectar Gmail", "lerr");
     }
@@ -1398,6 +1423,29 @@ function App() {
           continue;
         }
 
+        // Proveedores administrativos que nunca corresponden a TouchPay (seguros, gasolina, internet, etc.)
+        // Se detectan en el texto crudo del PDF ANTES de llamar a la IA, para no gastar la llamada.
+        const PROVEEDORES_EXCLUIDOS_TEXTO = [
+          "COMPAÑIA MUNDIAL DE SEGUROS",
+          "COMPAÑÍA MUNDIAL DE SEGUROS",
+          "SOMOS NETWORKS COLOMBIA",
+          "GRUPO EDS AUTOGAS",
+        ];
+        if (texto) {
+          const textoUpper = texto.toUpperCase();
+          const provExcluido = PROVEEDORES_EXCLUIDOS_TEXTO.find(p => textoUpper.includes(p));
+          if (provExcluido) {
+            addLog(`⊘ Omitida — proveedor administrativo (${provExcluido}), no corresponde a TouchPay`, "lwarn");
+            const entry = { _omitida: true, _archivo: file.name, _motivo: provExcluido, _procesadoEl: new Date().toLocaleString("es-CO") };
+            nuevos.push(entry);
+            const hist = load("as_historial", []);
+            hist.unshift({ tipo: "omitida", archivo: file.name, motivo: provExcluido, procesadoEl: entry._procesadoEl });
+            save("as_historial", hist.slice(0, 200));
+            setHistorial(hist.slice(0, 200));
+            continue;
+          }
+        }
+
         addLog(`→ Analizando con IA...`, "linf");
         const resultado = await analizarConIA(texto, file.name, addLog, file, apiKey);
         // Ignorar proveedores excluidos
@@ -1522,10 +1570,11 @@ function App() {
     }
 
     setStep(4);
-    const ok = nuevos.filter(r => !r._error && !r._duplicado).length;
+    const ok = nuevos.filter(r => !r._error && !r._duplicado && !r._omitida).length;
     const err = nuevos.filter(r => r._error).length;
     const dup = nuevos.filter(r => r._duplicado).length;
-    addLog(`✓ Terminado — ${ok} procesadas ✓  ${err} errores  ${dup} duplicadas`, "lok");
+    const omit = nuevos.filter(r => r._omitida).length;
+    addLog(`✓ Terminado — ${ok} procesadas ✓  ${err} errores  ${dup} duplicadas  ${omit} omitidas (administrativas)`, "lok");
     setResults(nuevos);
     setProcessing(false);
   };
@@ -1580,18 +1629,21 @@ function App() {
       try {
         const desdeDate = new Date(gmailDesde + "T00:00:00");
         const despues = Math.floor(desdeDate.getTime() / 1000);
-        const query = "has:attachment (filename:zip OR filename:ZIP OR filename:.zip) after:" + despues;
+        const query = "has:attachment (filename:zip OR filename:ZIP OR filename:.zip) after:" + despues + CLAUSULA_EXCLUSION_QUERY;
         const res = await fetch(
-          "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=" + encodeURIComponent(query) + "&maxResults=50&format=metadata&metadataHeaders=From",
+          "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=" + encodeURIComponent(query) + "&maxResults=50&format=metadata&metadataHeaders=From&metadataHeaders=Subject",
           { headers: { Authorization: "Bearer " + window._gmailToken } }
         );
         const data = await res.json();
         if (data.error) { addLog("⚠ Polling: token expirado — reconecta Gmail", "lwrn"); return; }
-        const msgs = (data.messages || []).map(m => {
-          const fromHeader = m.payload?.headers?.find(h => h.name === "From")?.value || "";
-          const fromName = fromHeader.replace(/<[^>]+>/g,"").replace(/"/g,"").trim() || "Proveedor desconocido";
-          return { ...m, remitente: fromName };
-        });
+        const msgs = (data.messages || [])
+          .map(m => {
+            const fromHeader = m.payload?.headers?.find(h => h.name === "From")?.value || "";
+            const subjectHeader = m.payload?.headers?.find(h => h.name === "Subject")?.value || "";
+            const fromName = fromHeader.replace(/<[^>]+>/g,"").replace(/"/g,"").trim() || "Proveedor desconocido";
+            return { ...m, remitente: fromName, _fromHeaderRaw: fromHeader, _subjectRaw: subjectHeader };
+          })
+          .filter(m => !esCorreoExcluido(m._fromHeaderRaw, m._subjectRaw));
         if (msgs.length > 0) {
           setGmailCorreos(msgs);
           addLog(`→ ${msgs.length} correos encontrados en revisión automática`, "lok");
@@ -2048,10 +2100,19 @@ ${productosSinMapear.length > 0 ? "⚠️ SIN EAN: " + productosSinMapear.map(p 
             {results.length>0&&<>
               <div className="res-hdr">
                 <div className="res-title">Resultados</div>
-                <div className="badge">{results.filter(r=>!r._error&&!r._duplicado).length} procesadas ✓</div>
+                <div className="badge">{results.filter(r=>!r._error&&!r._duplicado&&!r._omitida).length} procesadas ✓</div>
               </div>
 
               {results.map((f,fi)=>{
+                if(f._omitida) return(
+                  <div key={fi} className="dup-card">
+                    <div style={{color:"#6b8cff",fontWeight:600,marginBottom:3}}>⊘ Factura administrativa — no requiere TouchPay</div>
+                    <div style={{fontFamily:"DM Mono,monospace",fontSize:11,color:"#6b6b85"}}>{f._archivo}</div>
+                    <div style={{fontFamily:"DM Mono,monospace",fontSize:11,color:"#6b6b85",marginTop:3}}>
+                      Proveedor excluido: {f._motivo}
+                    </div>
+                  </div>
+                );
                 if(f._duplicado) return(
                   <div key={fi} className="dup-card">
                     <div style={{color:"#f5c842",fontWeight:600,marginBottom:3}}>⚠ Factura duplicada — no procesada</div>
@@ -2462,6 +2523,7 @@ ${productosSinMapear.length > 0 ? "⚠️ SIN EAN: " + productosSinMapear.map(p 
                         {h.numero&&`Factura ${h.numero} · `}{h.fecha&&`${h.fecha} · `}{h.procesadoEl}
                         {h.tipo==="ok"&&` · ${h.productos} productos · ${fCOP(h.total)}`}
                         {h.tipo==="error"&&` · Error: ${h.error}`}
+                        {h.tipo==="omitida"&&` · Proveedor administrativo: ${h.motivo}`}
                       </div>
                     </div>
                     <div className="hist-badges" onClick={e=>e.stopPropagation()}>
@@ -2473,6 +2535,7 @@ ${productosSinMapear.length > 0 ? "⚠️ SIN EAN: " + productosSinMapear.map(p 
                           : <span className="hbadge" style={{background:"#fff3cd",color:"#856404",border:"1px solid #f59e0b",fontWeight:700}}>⏸ Pendiente TouchPay</span>
                       )}
                       {h.tipo==="duplicado"&&<span className="hbadge hbdup">⚠ Duplicada</span>}
+                      {h.tipo==="omitida"&&<span className="hbadge" style={{background:"#e0e7ff",color:"#3730a3",border:"1px solid #a5b4fc"}}>⊘ Omitida</span>}
                       {h.tipo==="error"&&<span className="hbadge hberr">✗ Error</span>}
                       {h.tipo==="ok"&&h.alertas_precio?.length>0&&(
                         <div style={{margin:"8px 0 4px",padding:"12px 16px",background:"#fffbeb",border:"1.5px solid #f59e0b",borderRadius:10}}>
