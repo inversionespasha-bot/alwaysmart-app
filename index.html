@@ -286,7 +286,10 @@ function limpiarNum(n) {
 }
 
 async function llamarAPIImagen(base64, mediaType, apiKey) {
-  const prompt = `Eres un experto analizando remisiones y facturas físicas de proveedores colombianos.
+  // Prompt estático — va en "system". (Nota: con ~850 tokens queda debajo del mínimo
+  // cacheable de 1024 tokens para este modelo, así que hoy no genera ahorro por caché,
+  // pero mantiene la misma estructura que el flujo de texto por si este prompt crece.)
+  const REGLAS_FACTURA_IMAGEN = `Eres un experto analizando remisiones y facturas físicas de proveedores colombianos.
 
 Analiza la imagen e identifica primero qué proveedor es, luego aplica las reglas correspondientes:
 
@@ -334,11 +337,11 @@ JSON: {"proveedor":"...","nit_proveedor":"...","numero_factura":"...","fecha_emi
     body: JSON.stringify({
       model: "claude-sonnet-4-6",
       max_tokens: 8192,
+      system: [{ type: "text", text: REGLAS_FACTURA_IMAGEN, cache_control: { type: "ephemeral" } }],
       messages: [{
         role: "user",
         content: [
           { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
-          { type: "text", text: prompt }
         ]
       }]
     }),
@@ -356,8 +359,13 @@ JSON: {"proveedor":"...","nit_proveedor":"...","numero_factura":"...","fecha_emi
   }
 }
 
+
 async function llamarAPI(texto, apiKey) {
-  const prompt = `Eres un experto en facturas colombianas. Extrae los datos en JSON válido.
+  // Reglas estáticas (nunca cambian entre facturas) — van en "system" con cache_control
+  // para que la API las cachee: primera llamada paga el write, las siguientes (dentro de
+  // ~5 min, típico al procesar varias facturas seguidas o al reintentar una que falló)
+  // se cobran ~90% más barato en vez de reprocesar ~6000 tokens de reglas cada vez.
+  const REGLAS_FACTURA_TEXTO = `Eres un experto en facturas colombianas. Extrae los datos en JSON válido.
 
 REGLAS CRÍTICAS:
 - Responde ÚNICAMENTE con el objeto JSON, sin markdown ni texto adicional
@@ -701,9 +709,6 @@ Ejemplos:
 - "GALL TOSH MIEL*9(24)" → conv=9 (asterisco gana sobre paréntesis)
 - Coca-Cola CJ con columna CANT POR UNIDADES=12 → conv=12 (columna gana sobre todo)
 
-FACTURA:
-${texto}
-
 JSON:{"proveedor":"...","nit_proveedor":"...","numero_factura":"...","fecha_emision":"DD/MM/YYYY","forma_pago":"CONTADO","total_factura":0,"productos":[{"descripcion":"...","nombre_normalizado":"...","presentacion":null,"codigo":null,"cantidad_factura":0,"unidad_medida":"UND","cantidad_por_conversion":1,"valor_unitario_costo":0,"valor_total_linea":0,"iva_porcentaje":0}]}`;
 
   const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -714,7 +719,12 @@ JSON:{"proveedor":"...","nit_proveedor":"...","numero_factura":"...","fecha_emis
       "anthropic-version": "2023-06-01",
       "anthropic-dangerous-direct-browser-access": "true",
     },
-    body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 8192, messages: [{ role: "user", content: prompt }] }),
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 8192,
+      system: [{ type: "text", text: REGLAS_FACTURA_TEXTO, cache_control: { type: "ephemeral" } }],
+      messages: [{ role: "user", content: `FACTURA:\n${texto}` }],
+    }),
   });
   if (!res.ok) { const e = await res.json(); throw new Error(e.error?.message || "Error API"); }
   const data = await res.json();
@@ -728,6 +738,7 @@ JSON:{"proveedor":"...","nit_proveedor":"...","numero_factura":"...","fecha_emis
     throw new Error(`JSON inválido (posible corte por límite de tokens): ${err.message}`);
   }
 }
+
 
 
 // ============================================================
