@@ -1472,9 +1472,15 @@ function App() {
           ignorados.forEach(n => addLog(`⊘ Ignorado: "${n}" — descripción excluida`, "lwarn"));
           resultado.productos = resultado.productos.filter(p => !_ignorarProducto(p));
         }
-        if (resultado.nit_proveedor && NITS_IGNORAR.includes(String(resultado.nit_proveedor).trim())) {
+        // Requerimos que coincida NIT *y* nombre del proveedor — un NIT mal leído por la IA
+        // (ej. en facturas con poco texto extraído) no debe poder descartar una factura él solo.
+        const nitCoincide = resultado.nit_proveedor && NITS_IGNORAR.includes(String(resultado.nit_proveedor).trim());
+        const nombreCoincideEDS = resultado.proveedor?.toUpperCase().includes("EDS AUTOGAS") || resultado.proveedor?.toUpperCase().includes("AUTOGAS");
+        if (nitCoincide && nombreCoincideEDS) {
           addLog(`⊘ Ignorado: ${resultado.proveedor} — proveedor excluido (no requiere TouchPay)`, "lwarn");
           continue;
+        } else if (nitCoincide && !nombreCoincideEDS) {
+          addLog(`⚠ NIT coincide con EDS Autogas pero el proveedor extraído es "${resultado.proveedor}" — se procesa igual por seguridad, revisa si el NIT se leyó mal`, "lwarn");
         }
         addLog(`→ ✓ ${resultado.productos?.length} producto(s) — ${resultado.proveedor}${resultado._intentos > 1 ? ` (intento ${resultado._intentos})` : ""}`, "lok");
 
