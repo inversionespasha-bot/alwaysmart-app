@@ -1958,6 +1958,7 @@ _Total: ${total} unidades_`;
     } catch(e) {}
 
     const script = `Ingresa esta factura en TouchPay. MODO RÁPIDO: ejecuta cada paso sin pausas ni verificaciones intermedias. Solo toma screenshot si algo falla.
+⚠️ Para hacer clic usa SIEMPRE búsqueda de elemento (find / accessibility tree por texto o rol), NUNCA coordenadas de pantalla — evita el desalineo por zoom, scroll o contenido que se mueve, y evita el ciclo de reintentos con capturas de pantalla.
 
 FACTURA: ${f.numero_factura} | FECHA: ${fechaISO ? fechaISO.substring(0,7)+"-"+parseInt(fechaISO.substring(8,10)) : f.fecha_emision} | INVENTARIO: ${INVENTARIO}
 PROVEEDOR: ${f.proveedor} | ${lineas.length} productos
@@ -1965,7 +1966,8 @@ PROVEEDOR: ${f.proveedor} | ${lineas.length} productos
 PASOS:
 1. JavaScript click en botón AGREGAR NOTA → seleccionar Manual → si popup aparece: CONTINUAR EN PÁGINA ACTUAL
 2. Llenar formulario: Número=${f.numero_factura} | NFe=${f.numero_factura} | Fecha=${fechaISO ? fechaISO.substring(8,10)+"/"+fechaISO.substring(5,7)+"/"+fechaISO.substring(0,4) : f.fecha_emision} | Inventario=Stock Central 15 → SIGUIENTE
-3. Por cada producto: EAN → precio → cantidad → conv=1 → AGREGAR OTRO (último: AGREGAR Y FINALIZAR)
+3. Por cada producto: EAN → precio → cantidad → AGREGAR OTRO (último: AGREGAR Y FINALIZAR)
+   ⚠️ Campo "Unidad de Conversión": viene VACÍO — ábrelo y haz clic en la opción "Unidad" INMEDIATAMENTE, es siempre esa (nunca otra). NO leas ni compares las demás opciones del dropdown, NO verifiques después de elegirla — solo ábrelo, clic en "Unidad", y sigue.
 4. Confirmar y guardar
 
 PRODUCTOS (EAN|precio|cantidad):
