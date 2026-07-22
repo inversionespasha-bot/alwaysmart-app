@@ -1232,10 +1232,29 @@ function App() {
       const query = "has:attachment (filename:zip OR filename:ZIP OR filename:.zip) after:" + despues + CLAUSULA_EXCLUSION_QUERY;
       addLog(`→ Buscando correos con ZIP desde ${desdeDate.toLocaleDateString("es-CO")}...`, "linf");
       const res = await fetch(
-        "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=" + encodeURIComponent(query) + "&maxResults=50&format=metadata&metadataHeaders=From&metadataHeaders=Subject",
+        "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=" + encodeURIComponent(query) + "&maxResults=50",
         { headers: { Authorization: "Bearer " + token } }
       );
       return res.json();
+    };
+    // messages.list NO devuelve remitente/asunto (esos parámetros solo existen en
+    // messages.get) — hay que pedir el detalle de cada mensaje aparte para leerlos.
+    const obtenerHeaders = async (ids, token) => {
+      return Promise.all(ids.map(async (m) => {
+        try {
+          const r = await fetch(
+            `https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject`,
+            { headers: { Authorization: "Bearer " + token } }
+          );
+          const full = await r.json();
+          const fromHeader = full.payload?.headers?.find(h => h.name === "From")?.value || "";
+          const subjectHeader = full.payload?.headers?.find(h => h.name === "Subject")?.value || "";
+          const fromName = fromHeader.replace(/<[^>]+>/g,"").replace(/"/g,"").trim() || "Proveedor desconocido";
+          return { ...m, remitente: fromName, _fromHeaderRaw: fromHeader, _subjectRaw: subjectHeader };
+        } catch {
+          return { ...m, remitente: "Proveedor desconocido", _fromHeaderRaw: "", _subjectRaw: "" };
+        }
+      }));
     };
     try {
       let data = await ejecutarBusqueda(gmailToken);
@@ -1256,15 +1275,8 @@ function App() {
       }
       if (data.error) { addLog("✗ Error Gmail: " + data.error.message, "lerr"); setGmailLoading(false); return; }
       const totalBrutos = (data.messages || []).length;
-      const msgs = (data.messages || [])
-        .map(m => {
-          // Extraer nombre del remitente del header From
-          const fromHeader = m.payload?.headers?.find(h => h.name === "From")?.value || "";
-          const fromName = fromHeader.replace(/<[^>]+>/g,"").replace(/"/g,"").trim() || "Proveedor desconocido";
-          const subjectHeader = m.payload?.headers?.find(h => h.name === "Subject")?.value || "";
-          return { ...m, remitente: fromName, _fromHeaderRaw: fromHeader, _subjectRaw: subjectHeader };
-        })
-        .filter(m => !esCorreoExcluido(m._fromHeaderRaw, m._subjectRaw));
+      const conHeaders = await obtenerHeaders(data.messages || [], window._gmailToken);
+      const msgs = conHeaders.filter(m => !esCorreoExcluido(m._fromHeaderRaw, m._subjectRaw));
       const excluidosPropios = totalBrutos - msgs.length;
       setGmailCorreos(msgs);
       // Agrupar por remitente para el log
@@ -1648,19 +1660,28 @@ function App() {
         const despues = Math.floor(desdeDate.getTime() / 1000);
         const query = "has:attachment (filename:zip OR filename:ZIP OR filename:.zip) after:" + despues + CLAUSULA_EXCLUSION_QUERY;
         const res = await fetch(
-          "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=" + encodeURIComponent(query) + "&maxResults=50&format=metadata&metadataHeaders=From&metadataHeaders=Subject",
+          "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=" + encodeURIComponent(query) + "&maxResults=50",
           { headers: { Authorization: "Bearer " + window._gmailToken } }
         );
         const data = await res.json();
         if (data.error) { addLog("⚠ Polling: token expirado — reconecta Gmail", "lwrn"); return; }
-        const msgs = (data.messages || [])
-          .map(m => {
-            const fromHeader = m.payload?.headers?.find(h => h.name === "From")?.value || "";
-            const subjectHeader = m.payload?.headers?.find(h => h.name === "Subject")?.value || "";
+        // messages.list no trae remitente/asunto — hay que pedir el detalle de cada mensaje
+        const conHeaders = await Promise.all((data.messages || []).map(async (m) => {
+          try {
+            const r = await fetch(
+              `https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject`,
+              { headers: { Authorization: "Bearer " + window._gmailToken } }
+            );
+            const full = await r.json();
+            const fromHeader = full.payload?.headers?.find(h => h.name === "From")?.value || "";
+            const subjectHeader = full.payload?.headers?.find(h => h.name === "Subject")?.value || "";
             const fromName = fromHeader.replace(/<[^>]+>/g,"").replace(/"/g,"").trim() || "Proveedor desconocido";
             return { ...m, remitente: fromName, _fromHeaderRaw: fromHeader, _subjectRaw: subjectHeader };
-          })
-          .filter(m => !esCorreoExcluido(m._fromHeaderRaw, m._subjectRaw));
+          } catch {
+            return { ...m, remitente: "Proveedor desconocido", _fromHeaderRaw: "", _subjectRaw: "" };
+          }
+        }));
+        const msgs = conHeaders.filter(m => !esCorreoExcluido(m._fromHeaderRaw, m._subjectRaw));
         if (msgs.length > 0) {
           setGmailCorreos(msgs);
           addLog(`→ ${msgs.length} correos encontrados en revisión automática`, "lok");
