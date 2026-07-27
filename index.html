@@ -414,13 +414,24 @@ PROVEEDOR COCA-COLA FEMSA (NIT 890903858) — reglas especiales:
     * "001 COCA COLA ZERO 1.5L" CANT=4, CANT_POR_UNID=48, conv=48/4=12, TOTAL_FAC=228800, sin asterisco → 228800/48=4767
 
 PROVEEDOR FRITOLAY / COMERCIALIZADORA NACIONAL SAS LTDA (NIT 830040709) — Pepsico:
-  - Columnas: MATERIAL, DESCRIPCIÓN, CANT, UNIDAD, UN/CAJA, V. UNITARIO, DESCUENTO, IVA, VALOR NETO
+  - Columnas: MATERIAL, DESCRIPCIÓN, CANT, UNIDAD, UN/CAJA, PESO KGS, V. UNITARIO, DESCUENTO, IVA, VALOR NETO
   - La columna UNIDAD dice "C/U" (cada unidad) → cantidad_por_conversion = 1 siempre
   - El texto "20X1", "84X1" al final del nombre del producto es info del proveedor, ignorar para conversión
   - IVA = 19% para todos los productos de este proveedor
   - Sin descuentos generalmente
   - valor_unitario_costo = V. UNITARIO × 1.19
-  - Ejemplos: V.UNITARIO=$5.341 → valor_unitario_costo = 5341 × 1.19 = $6.356
+  - ⚠️ TRAMPA FRECUENTE EN EL TEXTO EXTRAÍDO: justo después de cada código MATERIAL suele aparecer
+    un número que NO es la cantidad — es el IVA de esa línea (VALOR NETO × 0.19), mal ubicado por el
+    orden confuso del texto extraído del PDF. NUNCA tomes como cantidad_factura el primer número que
+    aparezca pegado al MATERIAL sin verificar.
+  - VERIFICACIÓN OBLIGATORIA: cantidad_factura = VALOR NETO ÷ V. UNITARIO — SIEMPRE debe dar un
+    entero exacto (o muy cercano, redondea). Si el número que ibas a usar como cantidad no cumple
+    esta división exacta, es el número señuelo del IVA — descártalo y usa VALOR NETO ÷ V. UNITARIO.
+  - Ejemplos verificados con factura real:
+    * MATERIAL 300034149, V.UNITARIO=1.050, VALOR NETO=6.300 → cantidad_factura = 6300÷1050 = 6
+      (el texto trae un "1.197" pegado al material — es 6300×0.19, IGNORAR, no es cantidad)
+    * MATERIAL 300056029, V.UNITARIO=5.341, VALOR NETO=53.410 → cantidad_factura = 53410÷5341 = 10
+    * MATERIAL 300057587, V.UNITARIO=5.697, VALOR NETO=102.546 → cantidad_factura = 102546÷5697 = 18
 
 PROVEEDOR LÁCTEOS ENVIGADO (NIT 811037487):
   - Columnas: Item, Código, Descripción, Cant, Unidad, V. Unit, DSC, IVA, Valor Total
