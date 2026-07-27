@@ -789,6 +789,27 @@ const COMBOS = [
       { planograma: "TRULULU ORO",          cod_barras: "7702993051771", fraccion: 3/24 },
       { planograma: "TRULULU GUSANOS ACIDOS 70gr", cod_barras: "7702993051733", fraccion: 3/24 }
     ]
+  },
+  {
+    // Alias de Coca Cola para el mismo combo de arriba — misma composición (8 sabores, 3 c/u),
+    // pero en factura de Coca Cola la cantidad = # de cajas de 1.6kg (cada caja = 24 unidades surtidas),
+    // por eso necesita unidades_por_paquete a diferencia del combo "TRULULU MAS VENDIDAS".
+    // Patrón específico "TRULU 1.6" para no confundirse con "TRULULU MAS VENDIDAS" de arriba.
+    // Patrón tomado del texto real de factura: `TRULU 70U MAS VENDID 1.6K KIT6(1)`.
+    // Uso "VENDID 1.6K" porque es distintivo y no colisiona con "TRULULU MAS VENDIDAS"
+    // del combo de arriba (ese trae "VENDIDAS" completo, con AS; este no).
+    patron: "VENDID 1.6K",
+    unidades_por_paquete: 24,
+    productos: [
+      { planograma: "TRULULU SABORES",      cod_barras: "7702993051757", fraccion: 3/24 },
+      { planograma: "TRULULU AROS",         cod_barras: "7702993051801", fraccion: 3/24 },
+      { planograma: "TRULULU LENGUAS 70gr", cod_barras: "7702993051825", fraccion: 3/24 },
+      { planograma: "TRULULU FEROZ MINI",   cod_barras: "7702993051740", fraccion: 3/24 },
+      { planograma: "TRULULU SPLASH 70gr",  cod_barras: "7702993051887", fraccion: 3/24 },
+      { planograma: "TRULULU FRESITAS 70gr",cod_barras: "7702993051726", fraccion: 3/24 },
+      { planograma: "TRULULU ORO",          cod_barras: "7702993051771", fraccion: 3/24 },
+      { planograma: "TRULULU GUSANOS ACIDOS 70gr", cod_barras: "7702993051733", fraccion: 3/24 }
+    ]
   }
 ,
   {
