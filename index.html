@@ -56,21 +56,24 @@ const sheetsGet = async (token, range) => {
   return r.json();
 };
 const sheetsSet = async (token, range, values) => {
-  await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}?valueInputOption=RAW`, {
+  const r = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}?valueInputOption=RAW`, {
     method: "PUT", headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
     body: JSON.stringify({ values })
   });
+  if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(`sheetsSet ${range}: ${e.error?.message || r.status}`); }
 };
 const sheetsAppend = async (token, range, values) => {
-  await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`, {
+  const r = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`, {
     method: "POST", headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
     body: JSON.stringify({ values })
   });
+  if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(`sheetsAppend ${range}: ${e.error?.message || r.status}`); }
 };
 const sheetsClear = async (token, range) => {
-  await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}:clear`, {
+  const r = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}:clear`, {
     method: "POST", headers: { Authorization: "Bearer " + token }
   });
+  if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(`sheetsClear ${range}: ${e.error?.message || r.status}`); }
 };
 const sheetsEnsureSheets = async (token) => {
   const r = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}`, {
@@ -487,6 +490,14 @@ PROVEEDOR MEGA MAYORISTA / DIEGO EDILSON RAMÍREZ SALAZAR (NIT 1047391923):
     * "AGUA H2O LIMA LIMON" con UND → nombre_normalizado="H2O 1.5L", conv=1, valor=V/r Uni
   - Ejemplos: "TE HATSU P6 $23.100" → valor=23100÷6=3850, conv=6 | "AGUA H2O P15 $30.400" → valor=30400÷15=2027, conv=15 | "AGUA H2O UND $4.100" → valor=4100, conv=1
 
+PROVEEDOR SERGIO ALEJANDRO PEREZ OROZCO (vende GUACAMOLE 250g):
+  - IGNORAR siempre la línea "DOMICILIO" — es un cobro de envío, no es un producto, no debe incluirse
+    en la lista de productos ni afectar el conteo/cálculo de los demás ítems.
+
+PROVEEDOR AGRICOLA ARA SAS (vende AGUACATE MALLA):
+  - IGNORAR siempre la línea "DOMICILIO" — es un cobro de envío, no es un producto, no debe incluirse
+    en la lista de productos ni afectar el conteo/cálculo de los demás ítems.
+
 PROVEEDOR INSIFOOD / ABASTECIMIENTO GASTRONÓMICO SAS (NIT 901850389):
   - Columnas: Cod Product, Descripción, Cant, UND, Precio UND sin IVA, % IVA, Precio UND con IVA, % Des, Precio Neto UND con IVA, Valor Total con IVA
   - CRITICO: "Precio UND con IVA" es el precio de la CAJA/PACK completo, NO de la unidad individual
@@ -824,7 +835,10 @@ const COMBOS = [
   }
 ,
   {
-    patron: "TE HATSU 200",
+    // La cantidad en factura = # de cajas surtidas de 200 (cada caja trae 24 unidades: 6 de cada sabor)
+    // Patrón "HATSUX200" (sin espacio) porque el texto real de factura trae "TE HATSUx200x24"
+    patron: "HATSUX200",
+    unidades_por_paquete: 24,
     productos: [
       { planograma: "HATSU CAJA GRANADA Y MORA AZUL",              cod_barras: "7702090048452", fraccion: 6/24 },
       { planograma: "HATSU CAJA BLANCO Y MANGOSTINO",              cod_barras: "7702090048469", fraccion: 6/24 },
@@ -1191,6 +1205,56 @@ function App() {
     ]);
   };
 
+  // Sincroniza costos, config y maestro de productos desde Google Sheets.
+  // Se usa tanto al conectar Gmail por primera vez como automáticamente al abrir
+  // la app si ya había una sesión guardada — así el maestro de productos (incluyendo
+  // mapeos manuales hechos en otra sesión o dispositivo) siempre queda al día.
+  const sincronizarDatosSheets = async (token) => {
+    try {
+      await sheetsEnsureSheets(token);
+      const costoData = await sheetsGet(token, "Costos!A2:B");
+      if (costoData.values?.length > 0) {
+        const costos = {};
+        costoData.values.forEach(([ean,costo]) => { if(ean) costos[ean] = Number(costo); });
+        save("as_costos_productos", costos);
+        addLog(`✓ ${Object.keys(costos).length} costos cargados desde Sheets`, "lok");
+      }
+      const configData = await sheetsGet(token, "Config!A2:B");
+      if (configData.values?.length > 0) {
+        const ultimoRow = configData.values.find(r => r[0] === "as_ultimo_gmail");
+        if (ultimoRow?.[1]) {
+          save("as_ultimo_gmail", ultimoRow[1]);
+          setUltimoProcesamiento(ultimoRow[1]);
+          setGmailDesde(new Date(ultimoRow[1]).toISOString().slice(0,10));
+        }
+      }
+      // Cargar maestro completo desde Sheets y reemplazar en memoria
+      const maestroData = await sheetsGet(token, "Maestro_Nuevos!A2:G");
+      if (maestroData.values?.length > 0) {
+        const maestroSheets = maestroData.values
+          .filter(r => r[3]) // solo filas con cod_barras
+          .map(([proveedor, desc_factura, aliases_str, cod_barras, planograma, unidad_conv, cant_conv]) => ({
+            proveedor: proveedor || "OTRO",
+            desc_factura: desc_factura || "",
+            aliases: aliases_str ? aliases_str.split("|") : [desc_factura || ""],
+            cod_barras,
+            planograma: planograma || desc_factura || "",
+            unidad_conv: unidad_conv || "Unidad",
+            cant_conv: Number(cant_conv) || 1
+          }));
+        // Reemplazar maestro en memoria con versión de Sheets
+        MAESTRO_PRODUCTOS.length = 0;
+        maestroSheets.forEach(p => MAESTRO_PRODUCTOS.push(p));
+        // Guardar en localStorage como respaldo offline
+        save("as_maestro_cache", maestroSheets);
+        addLog(`✓ ${maestroSheets.length} productos cargados desde Sheets`, "lok");
+      }
+      addLog("✓ Datos sincronizados desde Google Sheets", "lok");
+    } catch(e) {
+      addLog("⚠ Sheets no disponible — usando datos locales", "lwrn");
+    }
+  };
+
   const conectarGmail = async () => {
     setGmailLoading(true);
     setGmailProcesando(false); // Reset por si quedó colgado
@@ -1200,55 +1264,22 @@ function App() {
       save("as_gmail_token", token);
       window._gmailToken = token;
       addLog("✓ Gmail conectado", "lok");
-      // Inicializar y sincronizar Google Sheets
-      try {
-        await sheetsEnsureSheets(token);
-        const costoData = await sheetsGet(token, "Costos!A2:B");
-        if (costoData.values?.length > 0) {
-          const costos = {};
-          costoData.values.forEach(([ean,costo]) => { if(ean) costos[ean] = Number(costo); });
-          save("as_costos_productos", costos);
-          addLog(`✓ ${Object.keys(costos).length} costos cargados desde Sheets`, "lok");
-        }
-        const configData = await sheetsGet(token, "Config!A2:B");
-        if (configData.values?.length > 0) {
-          const ultimoRow = configData.values.find(r => r[0] === "as_ultimo_gmail");
-          if (ultimoRow?.[1]) {
-            save("as_ultimo_gmail", ultimoRow[1]);
-            setUltimoProcesamiento(ultimoRow[1]);
-            setGmailDesde(new Date(ultimoRow[1]).toISOString().slice(0,10));
-          }
-        }
-        // Cargar maestro completo desde Sheets y reemplazar en memoria
-        const maestroData = await sheetsGet(token, "Maestro_Nuevos!A2:G");
-        if (maestroData.values?.length > 0) {
-          const maestroSheets = maestroData.values
-            .filter(r => r[3]) // solo filas con cod_barras
-            .map(([proveedor, desc_factura, aliases_str, cod_barras, planograma, unidad_conv, cant_conv]) => ({
-              proveedor: proveedor || "OTRO",
-              desc_factura: desc_factura || "",
-              aliases: aliases_str ? aliases_str.split("|") : [desc_factura || ""],
-              cod_barras,
-              planograma: planograma || desc_factura || "",
-              unidad_conv: unidad_conv || "Unidad",
-              cant_conv: Number(cant_conv) || 1
-            }));
-          // Reemplazar maestro en memoria con versión de Sheets
-          MAESTRO_PRODUCTOS.length = 0;
-          maestroSheets.forEach(p => MAESTRO_PRODUCTOS.push(p));
-          // Guardar en localStorage como respaldo offline
-          save("as_maestro_cache", maestroSheets);
-          addLog(`✓ ${maestroSheets.length} productos cargados desde Sheets`, "lok");
-        }
-        addLog("✓ Datos sincronizados desde Google Sheets", "lok");
-      } catch(e) {
-        addLog("⚠ Sheets no disponible — usando datos locales", "lwrn");
-      }
+      await sincronizarDatosSheets(token);
     } catch(e) {
       addLog("✗ Error conectando Gmail: " + e, "lerr");
     }
     setGmailLoading(false);
   };
+
+  // Al abrir la app, si ya había una sesión de Gmail guardada, sincroniza el maestro
+  // de productos desde Sheets en segundo plano — sin esto, un mapeo manual hecho ayer
+  // (o desde otro dispositivo) no aparecía hasta volver a darle clic a "Conectar Gmail".
+  React.useEffect(() => {
+    if (gmailToken) {
+      window._gmailToken = gmailToken;
+      sincronizarDatosSheets(gmailToken).catch(()=>{});
+    }
+  }, []);
 
   // Busca correos — si el token expiró lo refresca automáticamente sin popup
   const buscarCorreosGmail = async () => {
@@ -1505,7 +1536,7 @@ function App() {
         const resultado = await analizarConIA(texto, file.name, addLog, file, apiKey);
         // Ignorar proveedores excluidos
         const NITS_IGNORAR = ["902032136"]; // EDS Autogas - gasolina, no va a TouchPay
-        const DESCRIPCIONES_IGNORAR = ["EXHIBIDOR", "DISPLAY", "MATERIAL POP", "MATERIAL PUBLICITARIO", "E-BOLSA", "BOLSA EMPAQUE", "BOLSA DE EMPAQUE", "BOLSA POLIETILENO"];
+        const DESCRIPCIONES_IGNORAR = ["EXHIBIDOR", "DISPLAY", "MATERIAL POP", "MATERIAL PUBLICITARIO", "E-BOLSA", "BOLSA EMPAQUE", "BOLSA DE EMPAQUE", "BOLSA POLIETILENO", "DOMICILIO"];
         const _ignorarProducto = (p) => DESCRIPCIONES_IGNORAR.some(d =>
           (p.descripcion?.toUpperCase().includes(d)) ||
           (p.nombre_normalizado?.toUpperCase().includes(d)) ||
@@ -1565,10 +1596,18 @@ function App() {
           costos_guardados[ean] = costo_nuevo;
         });
         save("as_costos_productos", costos_guardados);
-        // Sincronizar costos a Sheets (async, no bloqueante)
+        // Sincronizar costos a Sheets con token fresco (async, no bloqueante, pero SÍ reporta si falla)
         if (window._gmailToken) {
-          const costosRows = [["ean","costo"], ...Object.entries(costos_guardados).map(([k,v])=>[k,v])];
-          sheetsClear(window._gmailToken, "Costos!A1:B").then(() => sheetsSet(window._gmailToken, "Costos!A1:B", costosRows)).catch(()=>{});
+          (async () => {
+            try {
+              const tokenFresco = await obtenerTokenFrescoConTimeout(true).catch(() => window._gmailToken);
+              const costosRows = [["ean","costo"], ...Object.entries(costos_guardados).map(([k,v])=>[k,v])];
+              await sheetsClear(tokenFresco, "Costos!A1:B");
+              await sheetsSet(tokenFresco, "Costos!A1:B", costosRows);
+            } catch (errSync) {
+              addLog(`⚠ No se pudo guardar el costo actualizado en Sheets: ${errSync.message} — el precio de esta factura SÍ quedó guardado localmente, pero puede no reflejarse en otro dispositivo hasta que se sincronice`, "lwarn");
+            }
+          })();
         }
 
         // Aplicar modificaciones del usuario (cantidades y precios editados) antes de guardar
@@ -1763,6 +1802,9 @@ function App() {
       }
       return { ...p, cod_barras_touchpay: ean, planograma_touchpay: p.nombre_normalizado || p.descripcion, _mapeado: true, _pendiente_mapeo: false };
     });
+    // Actualizar el caché local YA, sin esperar a reconectar Gmail — para que el mapeo
+    // quede disponible de inmediato en esta misma sesión/navegador sin repetirlo.
+    save("as_maestro_cache", [...MAESTRO_PRODUCTOS]);
     // Contar sin mapear restantes
     const aun_sin = entrada.data.productos.filter(p => p._pendiente_mapeo).length;
     entrada.productos = entrada.data.productos.length;
