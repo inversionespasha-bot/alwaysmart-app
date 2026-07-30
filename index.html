@@ -591,6 +591,8 @@ PROVEEDOR LA ALSACIA / RAMIREZ RAMIREZ LEONARDO DE JESUS (NIT 8353513):
       - "CHOCO BROWNIE AREQUIx6" → conv=6, valor_unit=VALOR÷6
       - "GALL ALFAJORx12X420GR" → conv=12, valor_unit=VALOR÷12
       - "GALL SALTIN TACO DIAx6" → conv=6, valor_unit=VALOR÷6
+      - "GALL DUCALES TACO DIA" (SIN sufijo "x6" en esta factura) → conv=6 IGUAL, valor_unit=VALOR÷6
+        (es un paquete de 6 unidades aunque el texto de esta factura no traiga el "x6")
     * ALIMENTOS, ASEO y CONSUMO MASIVO: la "x" indica contenido del empaque, NO conversión → conv=1
       - "FR SALCH RANCHE x5U" → conv=1, valor_unit=VALOR
       - "ACE OLEOCALIx900x12" → conv=1 (x12 es caja del proveedor)
@@ -608,6 +610,7 @@ PROVEEDOR LA ALSACIA / RAMIREZ RAMIREZ LEONARDO DE JESUS (NIT 8353513):
     * "CHOCO BROWNIE AREQUIx6" CANT=2, VALOR=$15.420, TOTAL=$30.840 → conv=6, valor_unit=15420÷6=2570
     * "GALL ALFAJORx12X420GR" CANT=1, VALOR=$21.350, TOTAL=$21.350 → conv=12, valor_unit=21350÷12=1779
     * "GALL SALTIN TACO DIAx6" CANT=1, VALOR=$11.630, TOTAL=$11.630 → conv=6, valor_unit=11630÷6=1938
+    * "GALL DUCALES TACO DIA" CANT=1, VALOR=$16.100, TOTAL=$16.100 → conv=6, valor_unit=16100÷6=2683
 
 PROVEEDOR VECTOR FOODS S.A.S / MONTEROJO (NIT 900842621):
   - Columnas: Ítem, Código, Descripción, Cantidad, Vr. Unitario, Valor desc., Vr. Bruto, Bodega
@@ -837,7 +840,10 @@ const COMBOS = [
   {
     // La cantidad en factura = # de cajas surtidas de 200 (cada caja trae 24 unidades: 6 de cada sabor)
     // Patrón "HATSUX200" (sin espacio) porque el texto real de factura trae "TE HATSUx200x24"
-    patron: "HATSUX200",
+    // Palabras clave (ambas deben aparecer) en vez de substring exacto — la IA a veces
+    // limpia el texto original ("TE HATSUx200x24" → "TE HATSU 200" u otra variante),
+    // así que no dependemos de si el separador es "x", espacio, o nada.
+    patron: ["HATSU", "200"],
     unidades_por_paquete: 24,
     productos: [
       { planograma: "HATSU CAJA GRANADA Y MORA AZUL",              cod_barras: "7702090048452", fraccion: 6/24 },
@@ -978,7 +984,13 @@ function normalizarProveedor(prov) {
 function expandirCombo(desc, cantidad, subtotal) {
   const d = desc.toUpperCase();
   for (const combo of COMBOS) {
-    if (d.includes(combo.patron.toUpperCase())) {
+    // patron puede ser un string (substring exacto) o un array de palabras clave que deben
+    // estar TODAS presentes sin importar el separador (espacio, "x", nada) — más robusto
+    // porque la IA a veces limpia/normaliza el texto original de forma distinta cada vez.
+    const coincide = Array.isArray(combo.patron)
+      ? combo.patron.every(kw => d.includes(kw.toUpperCase()))
+      : d.includes(combo.patron.toUpperCase());
+    if (coincide) {
       const totalUnidades = combo.unidades_por_paquete ? cantidad * combo.unidades_por_paquete : cantidad;
       return combo.productos.map(p => ({
         descripcion: p.planograma,
