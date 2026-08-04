@@ -277,6 +277,196 @@ async function fileToBase64(file) {
   });
 }
 
+// ==========================================
+// LECTOR DE FACTURA ELECTRÓNICA XML (UBL 2.1 / DIAN)
+// ==========================================
+// Las facturas electrónicas colombianas SIEMPRE traen un XML estructurado (obligatorio
+// por la DIAN, independiente del software de facturación del proveedor). Leerlo directamente
+// evita por completo la ambigüedad de "adivinar" cantidad/precio/IVA desde el texto de un PDF
+// — son campos con nombre, sin interpretación posible. Es 100% determinístico, sin IA.
+
+// Tabla de conversión (unidades por paquete) para productos ya conocidos que no se pueden
+// deducir del texto de la factura (ej. Ducales no siempre trae el "x6" en el nombre).
+// Se compara contra la descripción en mayúsculas — basta con que el texto CONTENGA la clave.
+const CONVERSION_XML_OVERRIDES = [
+  { contiene: "GALL SALTIN", conv: 6 },
+  { contiene: "GALL DUCALES", conv: 6 },
+  { contiene: "GALL ALFAJOR", conv: 12 },
+  { contiene: "CERVEZA AGUILA NORM", conv: 6 },
+  { contiene: "PONY MALTA", conv: 24 },
+  { contiene: "GANSITO", conv: 6 },
+  { contiene: "CHOCO BROWNIE AREQUI", conv: 6 },
+];
+
+// Detecta un sufijo tipo "xN"/"XN" al final de la descripción como pista de unidades por
+// paquete, PERO no lo aplica solo — solo sirve para marcar la línea como "revisar conversión"
+// si no hay un override conocido, en vez de adivinar y arriesgar un error silencioso.
+function detectarSufijoSospechoso(desc) {
+  const m = desc.toUpperCase().match(/X\s*(\d{1,3})\s*$/);
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  return (n >= 2 && n <= 60) ? n : null;
+}
+
+function buscarConversionConocida(desc) {
+  const d = desc.toUpperCase();
+  const ov = CONVERSION_XML_OVERRIDES.find(o => d.includes(o.contiene));
+  return ov ? ov.conv : null;
+}
+
+// Extrae texto de un elemento hijo directo por nombre de tag (con prefijo cbc:/cac: literal,
+// que es consistente en el 100% de las facturas electrónicas colombianas por estándar DIAN).
+function xmlTexto(el, tag) {
+  if (!el) return "";
+  const found = el.getElementsByTagName(tag);
+  return found.length ? (found[0].textContent || "").trim() : "";
+}
+function xmlNum(el, tag) {
+  const t = xmlTexto(el, tag);
+  const n = parseFloat(t);
+  return isNaN(n) ? 0 : n;
+}
+
+// Parsea el XML de una línea de producto (cac:InvoiceLine) a la misma forma "cruda" que
+// produce hoy la IA, ANTES de pasar por combos/maestro (eso sigue igual, sin tocarlo).
+function parsearLineaXML(lineEl) {
+  const cantidad = xmlNum(lineEl, "cbc:InvoicedQuantity");
+  const subtotal = xmlNum(lineEl, "cbc:LineExtensionAmount");
+  // Sumar IVA e IBUA (impuesto a bebidas azucaradas — Coca-Cola FEMSA y similares lo cobran
+  // como parte del costo real). ReteRenta y otras retenciones NO se suman: esas no las paga
+  // el comprador como costo, se las retiene el vendedor de su propio ingreso.
+  let ivaLinea = 0, ivaPorcentaje = 0, ibuaLinea = 0;
+  const taxTotales = lineEl.getElementsByTagName("cac:TaxTotal");
+  for (const tt of taxTotales) {
+    const subtotales = tt.getElementsByTagName("cac:TaxSubtotal");
+    for (const ts of subtotales) {
+      const esquema = ts.getElementsByTagName("cac:TaxScheme")[0];
+      const nombreImpuesto = xmlTexto(esquema, "cbc:Name").toUpperCase();
+      if (nombreImpuesto === "IVA") {
+        ivaLinea += xmlNum(ts, "cbc:TaxAmount");
+        ivaPorcentaje = xmlNum(ts, "cbc:Percent");
+      } else if (nombreImpuesto === "IBUA") {
+        ibuaLinea += xmlNum(ts, "cbc:TaxAmount");
+      }
+    }
+  }
+  const valorTotalLinea = Math.round((subtotal + ivaLinea + ibuaLinea) * 100) / 100;
+
+  const itemEl = lineEl.getElementsByTagName("cac:Item")[0];
+  const descripcion = xmlTexto(itemEl, "cbc:Description") || xmlTexto(lineEl, "cbc:Note");
+  // EAN/código de barras real si el proveedor lo reporta (no todos lo hacen consistentemente
+  // — algunos duplican su código interno acá — por eso igual se sigue matcheando contra el
+  // maestro por nombre como respaldo, exactamente como ya se hace hoy).
+  const stdId = itemEl?.getElementsByTagName("cac:StandardItemIdentification")[0];
+  let codigo = stdId ? xmlTexto(stdId, "cbc:ID") : "";
+  if (codigo && !/^\d{6,14}$/.test(codigo)) codigo = ""; // descartar si no parece EAN real
+
+  // Conversión (unidades por paquete):
+  // 1. Algunos proveedores (Coca-Cola FEMSA) reportan "cantporunidad" = total de unidades
+  //    individuales de la línea completa — con eso el cálculo es exacto, sin adivinar nada.
+  // 2. Si no, tabla de casos conocidos.
+  // 3. Si tampoco, y el nombre trae un sufijo sospechoso tipo "xN", se marca para revisión
+  //    en vez de adivinar — mejor pedir confirmación que arriesgar una cantidad mal.
+  let convConocida = null;
+  let props = itemEl?.getElementsByTagName("cac:AdditionalItemProperty") || [];
+  for (const prop of props) {
+    if (xmlTexto(prop, "cbc:Name").toLowerCase() === "cantporunidad") {
+      const totalUnidades = xmlNum(prop, "cbc:Value");
+      if (totalUnidades > 0 && cantidad > 0) convConocida = Math.round(totalUnidades / cantidad);
+    }
+  }
+  if (!convConocida) convConocida = buscarConversionConocida(descripcion);
+  const sufijoSospechoso = !convConocida ? detectarSufijoSospechoso(descripcion) : null;
+
+  return {
+    descripcion,
+    nombre_normalizado: descripcion,
+    presentacion: null,
+    codigo: codigo || null,
+    cantidad_factura: cantidad,
+    unidad_medida: "UND",
+    cantidad_por_conversion: convConocida || 1,
+    valor_unitario_costo: cantidad > 0 ? Math.round((valorTotalLinea / cantidad) * 100) / 100 : valorTotalLinea,
+    valor_total_linea: valorTotalLinea,
+    iva_porcentaje: ivaPorcentaje,
+    _fuente: "xml",
+    _conv_no_verificada: sufijoSospechoso ? true : false,
+    _conv_sospechosa_valor: sufijoSospechoso || undefined,
+  };
+}
+
+// Punto de entrada: recibe el texto del XML (puede venir envuelto en <AttachedDocument> con
+// la factura real en un CDATA, o ser ya el <Invoice> directo) y devuelve el mismo tipo de
+// objeto "resultado" que hoy produce analizarConIA — para que el resto del pipeline
+// (combos, maestro, historial, alertas de precio) siga funcionando exactamente igual.
+function parsearFacturaXML(xmlText) {
+  try {
+    const parser = new DOMParser();
+    let doc = parser.parseFromString(xmlText, "application/xml");
+    if (doc.getElementsByTagName("parsererror").length) return { ok: false, motivo: "XML mal formado" };
+
+    // Si es el envoltorio AttachedDocument, la factura real está en un CDATA adentro
+    const root = doc.documentElement;
+    if (root.localName === "AttachedDocument" || root.tagName === "AttachedDocument") {
+      const desc = doc.getElementsByTagName("cbc:Description");
+      let inner = null;
+      for (const d of desc) {
+        const txt = d.textContent || "";
+        if (txt.includes("<Invoice")) { inner = txt; break; }
+      }
+      if (!inner) return { ok: false, motivo: "No se encontró la factura (Invoice) embebida dentro del AttachedDocument" };
+      doc = parser.parseFromString(inner, "application/xml");
+      if (doc.getElementsByTagName("parsererror").length) return { ok: false, motivo: "XML interno (Invoice) mal formado" };
+    }
+
+    const invoice = doc.documentElement;
+    const numero_factura = xmlTexto(invoice, "cbc:ID");
+    const fechaISO = xmlTexto(invoice, "cbc:IssueDate"); // YYYY-MM-DD
+    const fecha_emision = fechaISO ? fechaISO.split("-").reverse().join("/") : "";
+
+    const supplier = invoice.getElementsByTagName("cac:AccountingSupplierParty")[0];
+    const party = supplier?.getElementsByTagName("cac:Party")[0];
+    let proveedor = xmlTexto(party, "cbc:RegistrationName") || xmlTexto(party, "cbc:Name");
+    const taxScheme = party?.getElementsByTagName("cac:PartyTaxScheme")[0];
+    const nit_proveedor = xmlTexto(taxScheme, "cbc:CompanyID");
+
+    const legalTotal = invoice.getElementsByTagName("cac:LegalMonetaryTotal")[0];
+    const total_factura = xmlNum(legalTotal, "cbc:PayableAmount");
+
+    const lineEls = invoice.getElementsByTagName("cac:InvoiceLine");
+    if (!lineEls.length) return { ok: false, motivo: "La factura XML no trae líneas de producto (cac:InvoiceLine)" };
+
+    const productos = [];
+    for (const lineEl of lineEls) {
+      const p = parsearLineaXML(lineEl);
+      if (p.cantidad_factura > 0 && p.descripcion) productos.push(p);
+    }
+    if (!productos.length) return { ok: false, motivo: "No se pudo extraer ningún producto válido del XML" };
+
+    // Validación aritmética: la suma de las líneas (con IVA) debe cuadrar con el total de
+    // la factura. Con XML esto casi siempre cuadra exacto — si no cuadra, es señal real de
+    // que algo se leyó mal (o hay descuentos/retenciones que no estamos considerando), y
+    // es mejor marcarlo para revisión que aceptarlo a ciegas.
+    const sumaLineas = Math.round(productos.reduce((s, p) => s + p.valor_total_linea, 0));
+    const diferencia = Math.abs(sumaLineas - Math.round(total_factura));
+    const toleranciaOK = total_factura > 0 ? (diferencia / total_factura) < 0.005 : true; // 0.5% de margen por redondeos
+
+    return {
+      ok: true,
+      resultado: {
+        proveedor, nit_proveedor, numero_factura, fecha_emision,
+        forma_pago: "CONTADO", total_factura, productos,
+        _fuente: "xml",
+        _validacion_aritmetica_ok: toleranciaOK,
+        _suma_lineas: sumaLineas,
+        _total_factura_xml: total_factura,
+      }
+    };
+  } catch (e) {
+    return { ok: false, motivo: "Error parseando XML: " + e.message };
+  }
+}
+
 function limpiarTexto(t) {
   return t.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, " ")
     .replace(/\\/g, "/").replace(/"/g, "'").replace(/\t/g, " ").substring(0, 6000);
@@ -1183,13 +1373,51 @@ function App() {
     setTimeout(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; }, 50);
   }, []);
 
-  const handleFiles = (fs) => {
-    const validos = [...fs].filter(f =>
-      f.type === "application/pdf" || f.name.endsWith(".pdf") ||
-      f.type === "image/jpeg" || f.type === "image/png" || f.type === "image/jpg" ||
-      f.name.endsWith(".jpg") || f.name.endsWith(".jpeg") || f.name.endsWith(".png")
-    );
-    setFiles(validos); setLogs([]); setStep(0); setResults([]);
+  const handleFiles = async (fs) => {
+    const entrada = [...fs];
+    const listos = [];
+    for (const f of entrada) {
+      const nombre = f.name.toLowerCase();
+      if (nombre.endsWith(".zip")) {
+        try {
+          const zip = await JSZip.loadAsync(f);
+          const porBase = {};
+          for (const [n, archivo] of Object.entries(zip.files)) {
+            const base = n.replace(/\.(pdf|xml)$/i, "");
+            porBase[base] = porBase[base] || {};
+            if (n.toLowerCase().endsWith('.pdf')) porBase[base].pdfNombre = n;
+            if (n.toLowerCase().endsWith('.xml')) porBase[base].xmlNombre = n;
+          }
+          for (const entry of Object.values(porBase)) {
+            if (entry.pdfNombre) {
+              const pdfBytes = await zip.files[entry.pdfNombre].async('arraybuffer');
+              const pdfFile = new File([pdfBytes], entry.pdfNombre, { type: 'application/pdf' });
+              if (entry.xmlNombre) {
+                try { pdfFile._xmlContent = await zip.files[entry.xmlNombre].async('text'); } catch {}
+              }
+              listos.push(pdfFile);
+            } else if (entry.xmlNombre) {
+              // XML sin PDF acompañante — igual se puede procesar solo con el XML
+              const xmlText = await zip.files[entry.xmlNombre].async('text');
+              const xmlFile = new File([xmlText], entry.xmlNombre, { type: 'application/xml' });
+              xmlFile._xmlContent = xmlText;
+              listos.push(xmlFile);
+            }
+          }
+        } catch (e) { console.error("Error leyendo ZIP arrastrado:", e); }
+      } else if (nombre.endsWith(".xml")) {
+        const xmlText = await f.text();
+        f._xmlContent = xmlText;
+        listos.push(f);
+      } else if (
+        f.type === "application/pdf" || nombre.endsWith(".pdf") ||
+        f.type === "image/jpeg" || f.type === "image/png" || f.type === "image/jpg" ||
+        nombre.endsWith(".jpg") || nombre.endsWith(".jpeg") || nombre.endsWith(".png")
+      ) {
+        listos.push(f);
+      }
+    }
+    setFiles(listos); setLogs([]); setStep(0); setResults([]);
   };
 
 
@@ -1422,14 +1650,28 @@ function App() {
         const b64 = attData.data.replace(/-/g,'+').replace(/_/g,'/');
         const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
         const zip = await JSZip.loadAsync(bytes);
+        // Agrupar por nombre base (sin extensión) para emparejar XML con su PDF correspondiente
+        const porBase = {};
         for (const [nombre, archivo] of Object.entries(zip.files)) {
-          if (nombre.toLowerCase().endsWith('.pdf')) {
-            const pdfBytes = await archivo.async('arraybuffer');
-            const pdfFile = new File([pdfBytes], nombre, { type: 'application/pdf' });
-            pdfFile._remitente = adj.remitente || null;
-            pdfs.push(pdfFile);
-            addLog(`→ PDF extraído: ${nombre}`, "lok");
+          const base = nombre.replace(/\.(pdf|xml)$/i, "");
+          porBase[base] = porBase[base] || {};
+          if (nombre.toLowerCase().endsWith('.pdf')) porBase[base].pdfNombre = nombre;
+          if (nombre.toLowerCase().endsWith('.xml')) porBase[base].xmlNombre = nombre;
+        }
+        for (const [base, entry] of Object.entries(porBase)) {
+          if (!entry.pdfNombre) continue; // siempre se necesita el PDF (como respaldo visual y para el nombre de archivo)
+          const pdfBytes = await zip.files[entry.pdfNombre].async('arraybuffer');
+          const pdfFile = new File([pdfBytes], entry.pdfNombre, { type: 'application/pdf' });
+          pdfFile._remitente = adj.remitente || null;
+          if (entry.xmlNombre) {
+            try {
+              pdfFile._xmlContent = await zip.files[entry.xmlNombre].async('text');
+              addLog(`→ PDF + XML extraídos: ${entry.pdfNombre}`, "lok");
+            } catch { addLog(`→ PDF extraído (XML no se pudo leer): ${entry.pdfNombre}`, "lok"); }
+          } else {
+            addLog(`→ PDF extraído (sin XML): ${entry.pdfNombre}`, "lok");
           }
+          pdfs.push(pdfFile);
         }
       } catch(e) { addLog("✗ Error en ZIP: " + e.message, "lerr"); }
     }
@@ -1503,9 +1745,40 @@ function App() {
       // Delay entre facturas para no saturar el rate limit (excepto la primera)
       if (i > 0) await new Promise(r => setTimeout(r, 4000));
       try {
-        addLog(`→ Leyendo PDF...`);
-        const texto = await extractText(file);
-        addLog(texto ? `→ ${texto.length} caracteres extraídos` : `→ Imagen lista para análisis visual`, "lok");
+        let resultado = null;
+        let texto = null;
+
+        // 1. Intentar leer el XML de la factura electrónica primero — es determinístico
+        //    (sin IA), así que si está disponible y parsea bien, se usa directamente.
+        if (file._xmlContent) {
+          addLog(`→ Leyendo XML de factura electrónica...`);
+          const xmlResult = parsearFacturaXML(file._xmlContent);
+          if (xmlResult.ok) {
+            resultado = xmlResult.resultado;
+            resultado.numero_factura = limpiarNum(resultado.numero_factura);
+            resultado._archivo = file.name;
+            resultado._procesadoEl = new Date().toLocaleString("es-CO");
+            texto = file._xmlContent; // el XML también sirve para detectar duplicados y proveedores excluidos
+            addLog(`→ ✓ XML leído directamente (sin IA) — ${resultado.productos.length} producto(s), ${resultado.proveedor}`, "lok");
+            if (resultado._validacion_aritmetica_ok === false) {
+              addLog(`⚠ La suma de las líneas ($${Math.round(resultado._suma_lineas).toLocaleString("es-CO")}) no cuadra exactamente con el total de la factura ($${Math.round(resultado._total_factura_xml).toLocaleString("es-CO")}) — revisa esta factura con cuidado`, "lwarn");
+            }
+            const conRevision = resultado.productos.filter(p => p._conv_no_verificada);
+            if (conRevision.length) {
+              addLog(`⚠ ${conRevision.length} producto(s) con posible empaque múltiple no confirmado — revisa la cantidad antes de confirmar: ${conRevision.map(p=>p.descripcion).join(" · ")}`, "lwarn");
+            }
+          } else {
+            addLog(`→ No se pudo leer el XML (${xmlResult.motivo}) — usando el método de PDF + IA de siempre`, "lwarn");
+          }
+        }
+
+        // 2. Si no hubo XML disponible o no se pudo leer, camino de siempre: PDF/imagen + IA
+        //    (esto NO cambia en nada — fotos e imágenes siguen exactamente igual que hoy)
+        if (!resultado) {
+          addLog(`→ Leyendo PDF...`);
+          texto = await extractText(file);
+          addLog(texto ? `→ ${texto.length} caracteres extraídos` : `→ Imagen lista para análisis visual`, "lok");
+        }
         setStep(2);
 
         const dup = detectarDup(texto);
@@ -1522,7 +1795,7 @@ function App() {
         }
 
         // Proveedores administrativos que nunca corresponden a TouchPay (seguros, gasolina, internet, etc.)
-        // Se detectan en el texto crudo del PDF ANTES de llamar a la IA, para no gastar la llamada.
+        // Se detectan en el texto crudo (PDF o XML) ANTES de llamar a la IA, para no gastar la llamada.
         const PROVEEDORES_EXCLUIDOS_TEXTO = [
           "COMPAÑIA MUNDIAL DE SEGUROS",
           "COMPAÑÍA MUNDIAL DE SEGUROS",
@@ -1544,8 +1817,11 @@ function App() {
           }
         }
 
-        addLog(`→ Analizando con IA...`, "linf");
-        const resultado = await analizarConIA(texto, file.name, addLog, file, apiKey);
+        // 3. Si no se resolvió por XML, ahí sí se llama a la IA (exactamente como siempre)
+        if (!resultado) {
+          addLog(`→ Analizando con IA...`, "linf");
+          resultado = await analizarConIA(texto, file.name, addLog, file, apiKey);
+        }
         // Ignorar proveedores excluidos
         const NITS_IGNORAR = ["902032136"]; // EDS Autogas - gasolina, no va a TouchPay
         const DESCRIPCIONES_IGNORAR = ["EXHIBIDOR", "DISPLAY", "MATERIAL POP", "MATERIAL PUBLICITARIO", "E-BOLSA", "BOLSA EMPAQUE", "BOLSA DE EMPAQUE", "BOLSA POLIETILENO", "DOMICILIO"];
@@ -2200,10 +2476,10 @@ ${productosSinMapear.length > 0 ? "⚠️ SIN EAN: " + productosSinMapear.map(p 
               onDragOver={e=>{e.preventDefault();setDragOver(true)}}
               onDragLeave={()=>setDragOver(false)}
               onDrop={e=>{e.preventDefault();setDragOver(false);handleFiles(e.dataTransfer.files)}}>
-              <input type="file" accept=".pdf,.jpg,.jpeg,.png" multiple onChange={e=>handleFiles(e.target.files)}/>
+              <input type="file" accept=".pdf,.jpg,.jpeg,.png,.zip,.xml" multiple onChange={e=>handleFiles(e.target.files)}/>
               <div className="drop-icon">📄</div>
               <div className="drop-title">{files.length>0?`${files.length} factura${files.length>1?"s":""} seleccionada${files.length>1?"s":""}` :"Arrastra las facturas aquí"}</div>
-              <div className="drop-sub">{files.length>0?files.map(f=>f.name).join(" · "):"o haz clic para seleccionar · PDF · JPG · PNG · múltiples archivos"}</div>
+              <div className="drop-sub">{files.length>0?files.map(f=>f.name).join(" · "):"o haz clic para seleccionar · PDF · ZIP · XML · JPG · PNG · múltiples archivos"}</div>
             </div>
 
             <button className="btn-main" disabled={!files.length||processing} onClick={procesar}>
@@ -2259,7 +2535,12 @@ ${productosSinMapear.length > 0 ? "⚠️ SIN EAN: " + productosSinMapear.map(p 
                   <div key={fi} className="card">
                     <div className="card-hdr">
                       <div>
-                        <div className="prov">{f.proveedor}</div>
+                        <div className="prov">
+                          {f.proveedor}
+                          {f._fuente==="xml"
+                            ? <span style={{marginLeft:8,fontSize:10,fontWeight:700,color:"#0891b2",background:"#cffafe",border:"1px solid #67e8f9",borderRadius:10,padding:"2px 7px"}}>📄 XML (sin IA)</span>
+                            : <span style={{marginLeft:8,fontSize:10,fontWeight:700,color:"#7c3aed",background:"#ede9fe",border:"1px solid #c4b5fd",borderRadius:10,padding:"2px 7px"}}>🤖 IA</span>}
+                        </div>
                         <div className="provmeta">NIT: {f.nit_proveedor} · {f._archivo} · Procesada: {f._procesadoEl}</div>
                       </div>
                       <div className="metas">
@@ -2270,6 +2551,11 @@ ${productosSinMapear.length > 0 ? "⚠️ SIN EAN: " + productosSinMapear.map(p 
                         {f._intentos>1&&<div className="intento">⚡ intento {f._intentos}</div>}
                       </div>
                     </div>
+                    {f._validacion_aritmetica_ok===false&&(
+                      <div style={{background:"#fef3c7",border:"1px solid #f59e0b",borderRadius:8,padding:"8px 12px",margin:"0 16px 12px",fontSize:12,color:"#92400e"}}>
+                        ⚠ La suma de los productos (${Math.round(f._suma_lineas).toLocaleString("es-CO")}) no cuadra exactamente con el total de la factura (${Math.round(f._total_factura_xml).toLocaleString("es-CO")}) — revisa esta factura con cuidado antes de confirmar en TouchPay.
+                      </div>
+                    )}
                     <div className="tw">
                       <table>
                         <thead>
@@ -2304,9 +2590,12 @@ ${productosSinMapear.length > 0 ? "⚠️ SIN EAN: " + productosSinMapear.map(p 
                               : (unidadesRecibidas > 0 ? p.valor_total_linea / unidadesRecibidas : p.valor_unitario_costo);
 
                             return (
-                              <tr key={pi} style={ajustado ? {background:"#fffbeb"} : {}}>
+                              <tr key={pi} style={p._conv_no_verificada ? {background:"#fff1e6"} : (ajustado ? {background:"#fffbeb"} : {})}>
                                 <td className="tmono" style={{color:"var(--muted)"}}>{pi+1}</td>
-                                <td style={{maxWidth:200,fontWeight:600}}>{p.descripcion}</td>
+                                <td style={{maxWidth:200,fontWeight:600}}>
+                                  {p.descripcion}
+                                  {p._conv_no_verificada && <div style={{fontSize:10,color:"#c2410c",fontWeight:700,marginTop:2}}>⚠ ¿Trae x{p._conv_sospechosa_valor} por paquete? Verifica la cantidad</div>}
+                                </td>
                                 <td className="tmono" style={{color:"var(--muted)"}}>{p.codigo||"—"}</td>
                                 <td className="tmono" style={{textAlign:"center",color:"var(--muted)"}}>{p.cantidad_factura}</td>
                                 <td style={{textAlign:"center"}}>
